@@ -25,7 +25,7 @@ This repository hosts a lightweight, step-by-step guide for setting up an autono
 3. Store the key securely.
 
 ### Local tooling
-- Install Python 3.9+ (3.10–3.12 recommended).
+- Install Python 3.9+ (3.10–3.13 recommended).
 - Ensure `git` is installed for cloning.
 
 ## Phase 2: Clone & set up the xMCP server (local first)
@@ -115,4 +115,4 @@ Then tag your bot from another account to see it respond. Replace the placeholde
 - Deploy to Railway/Render/VPS for 24/7 operation.
 
 ## Current status
-Start with steps 1–10 today. If you hit a snag, share the exact output/error and we can debug together.
+Start with Phases 1–4 today. If you hit a snag, share the exact output/error and we can debug together.

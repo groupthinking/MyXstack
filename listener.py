@@ -13,6 +13,19 @@ def require_env(name: str) -> str:
     return value
 
 
+def parse_poll_interval() -> int:
+    value = os.getenv("POLL_INTERVAL_SECONDS", "60")
+    try:
+        interval = int(value)
+    except ValueError:
+        print(f"Invalid POLL_INTERVAL_SECONDS '{value}', defaulting to 60.")
+        return 60
+    if interval <= 0:
+        print("POLL_INTERVAL_SECONDS must be positive; defaulting to 60.")
+        return 60
+    return interval
+
+
 def build_client() -> tweepy.Client:
     return tweepy.Client(
         bearer_token=require_env("X_BEARER_TOKEN"),
@@ -23,15 +36,15 @@ def build_client() -> tweepy.Client:
     )
 
 
-def fetch_thread_context(client: tweepy.Client, conversation_id: str) -> str:
+def fetch_thread_context(client: tweepy.Client, conversation_id: str) -> str | None:
     try:
         thread = client.search_recent_tweets(
             query=f"conversation_id:{conversation_id}",
             tweet_fields=["text", "author_id"],
         )
     except TweepyException as exc:
-        print(f"Failed to fetch thread context: {exc}")
-        return ""
+        print(f"Failed to fetch thread context for {conversation_id}: {exc}")
+        return None
     tweets = thread.data or []
     return "\n".join(tweet.text for tweet in tweets)
 
@@ -41,7 +54,7 @@ def main() -> None:
         client = build_client()
         bot = client.get_me().data
     except (RuntimeError, TweepyException) as exc:
-        print(f"Unable to initialize X client: {exc}")
+        print(f"Unable to initialize client: {exc}")
         return
 
     if not bot:
@@ -49,7 +62,7 @@ def main() -> None:
         return
 
     bot_id = bot.id
-    poll_interval = int(os.getenv("POLL_INTERVAL_SECONDS", "60"))
+    poll_interval = parse_poll_interval()
     last_seen_id = None
     last_checked = datetime.now(timezone.utc) - timedelta(minutes=10)
 
@@ -66,13 +79,23 @@ def main() -> None:
             continue
 
         mentions = mentions_response.data or []
+        processed_ids: list[int] = []
+        had_failure = False
+
         for mention in reversed(mentions):
-            if mention.created_at and mention.created_at <= last_checked:
+            if mention.created_at and mention.created_at < last_checked:
+                processed_ids.append(int(mention.id))
                 continue
             if not mention.conversation_id:
+                processed_ids.append(int(mention.id))
                 continue
 
             context = fetch_thread_context(client, str(mention.conversation_id))
+            if context is None:
+                print(f"Skipping mention {mention.id} due to thread fetch failure.")
+                had_failure = True
+                break
+
             prompt = (
                 "You were tagged here:\n"
                 f"{context}\n\n"
@@ -90,10 +113,15 @@ def main() -> None:
                 )
             except TweepyException as exc:
                 print(f"Failed to reply to mention {mention.id}: {exc}")
+                had_failure = True
+                break
 
-        if mentions:
-            last_seen_id = max(int(mention.id) for mention in mentions)
-        last_checked = datetime.now(timezone.utc)
+            processed_ids.append(int(mention.id))
+
+        if processed_ids:
+            last_seen_id = max(processed_ids)
+            if not had_failure:
+                last_checked = datetime.now(timezone.utc)
         time.sleep(poll_interval)
 
 
