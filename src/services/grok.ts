@@ -19,6 +19,9 @@ export class GrokService {
 
   /**
    * Analyze a mention and thread context to determine appropriate action
+   * @param mention - The text content of the mention to analyze
+   * @param thread - The thread context including root post and replies
+   * @returns Analysis with recommended action
    */
   async analyzeAndDecide(mention: string, thread: XThread): Promise<GrokAnalysis> {
     if (this.simulationMode) {
