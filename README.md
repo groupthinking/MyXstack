@@ -1,244 +1,118 @@
-# MyXstack 🤖✨
+# MyXstack
 
-**Autonomous AI Agent System on X (Twitter)**
+This repository hosts a lightweight, step-by-step guide for setting up an autonomous X (Twitter) agent system that detects mentions, pulls thread context, and routes reasoning through Grok via the xMCP server. Follow the phases below to get from zero to a working "tag and watch" prototype.
 
-MyXstack is an intelligent, autonomous AI agent that monitors your X (Twitter) account for mentions, analyzes them using Grok AI, and takes appropriate actions—all without manual intervention. Experience the future of social media automation with a "tag and watch" system where the agent executes live in threads.
+## Phase 1: Gather prerequisites & accounts (1–2 hours)
 
-## 🌟 Features
+### X developer account & app
+1. Go to <https://developer.x.com> and sign in with the account you want the bot to run on.
+2. Create a new app/project (free tier is fine to start).
+3. Set app permissions to **Read + Write + Direct Messages** so the agent can post replies.
+4. Generate and record the OAuth 1.0a credentials:
+   - API Key
+   - API Secret
+   - Access Token (user context)
+   - Access Token Secret
 
-- **🔔 Automatic Mention Detection**: Continuously monitors your X account for new mentions and tags
-- **🧵 Thread Context Analysis**: Fetches complete conversation threads for better context understanding
-- **🤖 Grok AI Integration**: Uses xAI's Grok for intelligent analysis and decision-making
-- **⚡ Autonomous Actions**: Automatically replies, searches, or generates content based on context
-- **🌉 xMCP Server Bridge**: Standardized Model Context Protocol server exposing X API tools
-- **🎭 Simulation Mode**: Test the system without real API credentials
-- **📊 Real-time Monitoring**: Live console output showing agent decisions and actions
+### Dedicated bot account (recommended)
+1. Create a new X account for the bot (for example, `@MyXMCPBot`).
+2. Link the bot account to your developer app via the OAuth flow.
+3. Note the bot user ID (you can fetch this via the API later).
 
-## 🏗️ Architecture
+### xAI / Grok API key
+1. Ensure you have an X Premium+ subscription for API access.
+2. Visit <https://console.x.ai>, open the API keys section, and create a key that starts with `xai-`.
+3. Store the key securely.
 
-```
-┌─────────────────┐
-│  X (Twitter)    │
-│  Mentions       │
-└────────┬────────┘
-         │
-         ▼
-┌─────────────────┐      ┌──────────────┐
-│  X API Client   │◄────►│  xMCP Server │
-└────────┬────────┘      └──────────────┘
-         │                       ▲
-         ▼                       │
-┌─────────────────┐             │
-│  Autonomous     │             │
-│  Agent          │             │
-│  Orchestrator   │             │
-└────────┬────────┘             │
-         │                       │
-         ▼                       │
-┌─────────────────┐             │
-│  Grok AI        │─────────────┘
-│  Service        │
-└─────────────────┘
-```
+### Local tooling
+- Install Python 3.9+ (3.10–3.13 recommended).
+- Ensure `git` is installed for cloning.
 
-## 🚀 Quick Start
+## Phase 2: Clone & set up the xMCP server (local first)
 
-### Prerequisites
-
-- Node.js 18+ and npm
-- X (Twitter) API credentials (optional for simulation mode)
-- xAI API key for Grok (optional for simulation mode)
-
-### Installation
-
-1. **Clone the repository**
+1. Clone your fork of the xMCP server:
    ```bash
-   git clone https://github.com/groupthinking/MyXstack.git
-   cd MyXstack
+   git clone https://github.com/groupthinking/xMCP.git
+   cd xMCP
+   ```
+2. Create and activate a virtual environment:
+   ```bash
+   python -m venv .venv
+   source .venv/bin/activate
+   ```
+3. Install dependencies:
+   ```bash
+   pip install -r requirements.txt
+   ```
+4. Create your `.env`:
+   ```bash
+   cp env.example .env
+   ```
+5. Fill in the `.env` values you need:
+   ```text
+   # OAuth user token for posting replies
+   X_OAUTH_ACCESS_TOKEN=your_access_token_here
+   X_OAUTH_ACCESS_TOKEN_SECRET=your_access_token_secret_here
+
+   # Optional read-only bearer token
+   # X_BEARER_TOKEN=your_bearer_token_here
+
+   # Grok / xAI
+   XAI_API_KEY=your_xai_key_here
+   XAI_MODEL=grok-4-1-fast
+
+   # Optional tuning
+   MCP_HOST=127.0.0.1
+   MCP_PORT=8000
+   X_API_DEBUG=1
+   ```
+6. If you need to generate OAuth user tokens, add `CLIENT_ID` and `CLIENT_SECRET` to `.env`, update the redirect URI in `generate_authtoken.py`, and run:
+   ```bash
+   python generate_authtoken.py
    ```
 
-2. **Install dependencies**
+## Phase 3: Test the core xMCP server + Grok connection
+
+1. Start the MCP server:
    ```bash
-   npm install
+   python server.py
    ```
-
-3. **Configure environment**
+   You should see `Server running on http://127.0.0.1:8000`.
+2. In another terminal, test Grok integration:
    ```bash
-   cp .env.example .env
-   # Edit .env with your credentials
+   python test_grok_mcp.py
    ```
+3. Try prompts like:
+   - `Search recent posts about MCP`
+   - `Get my user info`
+   - `Post a test reply saying 'Hello from MCP' to tweet ID 1234567890`
 
-4. **Build the project**
-   ```bash
-   npm run build
-   ```
+If these work, the core pipe (Grok → xMCP → X API) is live.
 
-5. **Start the agent**
-   ```bash
-   npm start
-   ```
+## Phase 4: Add the trigger layer (tag/mention → action)
 
-## ⚙️ Configuration
-
-Create a `.env` file based on `.env.example`:
-
-```env
-# X (Twitter) API Credentials
-X_API_KEY=your_api_key_here
-X_API_SECRET=your_api_secret_here
-X_ACCESS_TOKEN=your_access_token_here
-X_ACCESS_TOKEN_SECRET=your_access_token_secret_here
-X_BEARER_TOKEN=your_bearer_token_here
-
-# X Account Settings
-X_USERNAME=your_twitter_username
-
-# Grok/xAI Settings
-XAI_API_KEY=your_xai_api_key_here
-
-# Agent Settings
-POLLING_INTERVAL_MS=30000  # Check for mentions every 30 seconds
-MAX_RETRIES=3
-```
-
-### Getting API Credentials
-
-#### X (Twitter) API
-1. Go to [Twitter Developer Portal](https://developer.twitter.com/en/portal/dashboard)
-2. Create a new project and app
-3. Generate API keys and access tokens
-4. Enable OAuth 1.0a for posting
-
-#### xAI (Grok)
-1. Visit [xAI Console](https://console.x.ai/)
-2. Sign up and create an API key
-3. Copy your API key to the `.env` file
-
-## 🎮 Usage
-
-### Running in Production Mode
-
-With real API credentials configured:
+A simple polling listener is provided in `listener.py` at the repo root. It uses Tweepy to poll for mentions and posts a placeholder reply. The listener requires OAuth user credentials (plus a bearer token for reads). Install Tweepy, export your environment variables, and run it while the xMCP server is up:
 
 ```bash
-npm start
+pip install tweepy
+export X_API_KEY=your_api_key
+export X_API_SECRET=your_api_secret
+export X_OAUTH_ACCESS_TOKEN=your_access_token
+export X_OAUTH_ACCESS_TOKEN_SECRET=your_access_token_secret
+export X_BEARER_TOKEN=your_bearer_token
+export POLL_INTERVAL_SECONDS=60
+python listener.py
 ```
 
-The agent will:
-1. Monitor your X account for mentions
-2. Fetch conversation context
-3. Analyze with Grok AI
-4. Take autonomous actions (reply, search, analyze)
+Then tag your bot from another account to see it respond. Replace the placeholder Grok call with your real xMCP/Grok invocation when ready.
 
-### Running in Simulation Mode
+## Phase 5: Iterate toward full autonomy
 
-Test without real credentials (leave `X_BEARER_TOKEN` and `XAI_API_KEY` empty):
+- Wire the listener to call Grok through the xMCP server.
+- Add Docker/Docker Compose if you want a containerized workflow.
+- Persist state (SQLite) to avoid reprocessing old mentions.
+- Extend with proxies, CrewAI/AutoGen, or other agent frameworks.
+- Deploy to Railway/Render/VPS for 24/7 operation.
 
-```bash
-npm start
-```
-
-The agent will use simulated data to demonstrate functionality.
-
-### Development Mode
-
-```bash
-npm run dev
-```
-
-## 📖 How It Works
-
-1. **Mention Detection**: The agent polls the X API every 30 seconds (configurable) to check for new mentions
-
-2. **Context Fetching**: When a mention is found, the agent fetches the complete thread/conversation for context
-
-3. **Grok Analysis**: The mention and thread context are sent to Grok AI, which decides:
-   - Should we reply? (and with what content)
-   - Should we search for more information?
-   - Should we just analyze without taking action?
-
-4. **Action Execution**: Based on Grok's decision, the agent:
-   - Posts a reply to the thread
-   - Searches X for relevant information
-   - Logs analysis results
-   - Generates content as needed
-
-5. **Live Monitoring**: All decisions and actions are logged in real-time to the console
-
-## 🔧 xMCP Server
-
-The xMCP (X Model Context Protocol) server exposes X API functionality in a standardized way:
-
-**Available Tools:**
-- `x_fetch_mentions` - Get recent mentions
-- `x_fetch_thread` - Get conversation threads
-- `x_post_reply` - Post replies
-- `x_search_tweets` - Search tweets
-
-This allows Grok or other AI models to interact with X autonomously through a standard interface.
-
-## 🎯 Example Scenarios
-
-### Scenario 1: Question Reply
-**User tweets:** "@yourusername Can you explain how blockchain works?"
-
-**Agent action:**
-1. Detects mention
-2. Analyzes with Grok
-3. Generates educational reply
-4. Posts reply to thread
-
-### Scenario 2: Research Request
-**User tweets:** "@yourusername What's the latest on AI development?"
-
-**Agent action:**
-1. Detects mention
-2. Searches X for recent AI news
-3. Synthesizes findings
-4. Replies with summary and sources
-
-### Scenario 3: Thread Participation
-**User mentions you in an ongoing discussion**
-
-**Agent action:**
-1. Fetches entire thread context
-2. Understands conversation flow
-3. Generates contextually relevant reply
-4. Contributes meaningfully to discussion
-
-## 🛡️ Safety & Best Practices
-
-- **Rate Limiting**: The system respects X API rate limits
-- **Context-Aware**: Analyzes full thread context before responding
-- **Configurable Polling**: Adjust monitoring frequency to your needs
-- **Error Handling**: Graceful degradation with simulation fallbacks
-- **Privacy**: No data is stored; all processing is real-time
-
-## 🤝 Contributing
-
-Contributions are welcome! Areas for enhancement:
-- Additional action types (like, retweet, quote tweet)
-- Advanced Grok prompting strategies
-- Webhook-based real-time monitoring
-- Multi-account support
-- Web dashboard for monitoring
-
-## 📝 License
-
-MIT License - See LICENSE file for details
-
-## 🙏 Acknowledgments
-
-- Built with [Model Context Protocol (MCP)](https://github.com/modelcontextprotocol)
-- Powered by [Grok AI from xAI](https://x.ai/)
-- X (Twitter) API integration
-
-## 📧 Support
-
-For issues, questions, or suggestions:
-- Open an issue on GitHub
-- Contact: [Your contact info]
-
----
-
-**⚡ Tag and watch your AI agent in action!** 🚀 
+## Current status
+Start with Phases 1–4 today. If you hit a snag, share the exact output/error and we can debug together.

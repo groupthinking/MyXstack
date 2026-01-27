@@ -1,0 +1,26 @@
+# CODEOWNERS - Automatically assigns reviewers based on file paths
+
+# Default owner for everything
+* @groupthinking
+
+# Frontend
+*.tsx @groupthinking
+*.jsx @groupthinking
+*.css @groupthinking
+/frontend/ @groupthinking
+
+# Backend
+*.py @groupthinking
+*.go @groupthinking
+/backend/ @groupthinking
+/api/ @groupthinking
+
+# Infrastructure
+/.github/ @groupthinking
+*.yml @groupthinking
+*.yaml @groupthinking
+Dockerfile @groupthinking
+
+# Documentation
+*.md @groupthinking
+/docs/ @groupthinking
