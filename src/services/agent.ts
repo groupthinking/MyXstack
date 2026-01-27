@@ -12,6 +12,8 @@ export class AutonomousAgent {
   private config: AgentConfig;
   private processedMentions: Set<string> = new Set();
   private isRunning: boolean = false;
+  private pollingIntervalId: NodeJS.Timeout | null = null;
+  private isProcessing: boolean = false;
 
   constructor(config: AgentConfig, xClient: XAPIClient) {
     this.config = config;
@@ -34,11 +36,14 @@ export class AutonomousAgent {
     await this.checkAndProcess();
 
     // Set up polling interval
-    const intervalId = setInterval(async () => {
+    this.pollingIntervalId = setInterval(async () => {
       if (this.isRunning) {
         await this.checkAndProcess();
       } else {
-        clearInterval(intervalId);
+        if (this.pollingIntervalId) {
+          clearInterval(this.pollingIntervalId);
+          this.pollingIntervalId = null;
+        }
       }
     }, this.config.pollingIntervalMs);
 
@@ -51,12 +56,24 @@ export class AutonomousAgent {
   stop(): void {
     console.log('\n🛑 Stopping agent...');
     this.isRunning = false;
+    if (this.pollingIntervalId) {
+      clearInterval(this.pollingIntervalId);
+      this.pollingIntervalId = null;
+    }
   }
 
   /**
    * Main processing loop: check for mentions and process them
    */
   private async checkAndProcess(): Promise<void> {
+    // Prevent concurrent processing
+    if (this.isProcessing) {
+      console.log(`⏳ [${new Date().toLocaleTimeString()}] Previous processing still in progress, skipping...`);
+      return;
+    }
+
+    this.isProcessing = true;
+
     try {
       // Fetch new mentions
       const mentions = await this.xClient.fetchMentions(this.config.username);
@@ -80,6 +97,8 @@ export class AutonomousAgent {
       }
     } catch (error) {
       console.error('❌ Error in processing loop:', error);
+    } finally {
+      this.isProcessing = false;
     }
   }
 

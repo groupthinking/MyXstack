@@ -34,9 +34,14 @@ export class XAPIClient {
         'GET'
       );
       
-      const userId = response.data?.id;
+      if (!response || !response.data) {
+        console.warn('Invalid response from X API (user lookup)');
+        return [];
+      }
+
+      const userId = response.data.id;
       if (!userId) {
-        throw new Error('Failed to get user ID');
+        throw new Error('Failed to get user ID from response');
       }
 
       const mentionsResponse = await this.makeXAPIRequest(
@@ -44,7 +49,12 @@ export class XAPIClient {
         'GET'
       );
 
-      return this.parseMentions(mentionsResponse.data || []);
+      if (!mentionsResponse || !Array.isArray(mentionsResponse.data)) {
+        console.warn('Invalid response from X API (mentions)');
+        return [];
+      }
+
+      return this.parseMentions(mentionsResponse.data);
     } catch (error) {
       console.error('Error fetching mentions:', error);
       return [];

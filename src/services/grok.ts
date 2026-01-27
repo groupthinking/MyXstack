@@ -125,16 +125,15 @@ export class GrokService {
       };
     } catch (error) {
       console.error('Error parsing Grok response:', error);
-      // Fallback to a default reply action
+      // Fallback to analysis-only action (no content posted)
       return {
         action: {
-          type: 'reply',
+          type: 'analyze',
           target_post_id: mentionPostId,
-          content: 'Thank you for mentioning me! I\'m processing your request.',
-          reasoning: 'Fallback response due to parsing error',
+          reasoning: 'Unable to parse AI response - defaulting to analyze-only mode',
         },
-        confidence: 0.5,
-        explanation: 'Used fallback due to response parsing error',
+        confidence: 0.3,
+        explanation: 'Used fallback due to response parsing error - no action taken',
       };
     }
   }
