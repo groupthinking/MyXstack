@@ -71,7 +71,7 @@ This repository hosts a lightweight, step-by-step guide for setting up an autono
    python generate_authtoken.py
    ```
 
-## Phase 3: Test the core MCP server + Grok connection
+## Phase 3: Test the core xMCP server + Grok connection
 
 1. Start the MCP server:
    ```bash
@@ -87,22 +87,28 @@ This repository hosts a lightweight, step-by-step guide for setting up an autono
    - `Get my user info`
    - `Post a test reply saying 'Hello from MCP' to tweet ID 1234567890`
 
-If these work, the core pipe (Grok → MCP → X API) is live.
+If these work, the core pipe (Grok → xMCP → X API) is live.
 
 ## Phase 4: Add the trigger layer (tag/mention → action)
 
-A simple polling listener is provided in `listener.py` at the repo root. It uses Tweepy to poll for mentions and posts a placeholder reply. Install Tweepy, export your environment variables, and run it while the MCP server is up:
+A simple polling listener is provided in `listener.py` at the repo root. It uses Tweepy to poll for mentions and posts a placeholder reply. The listener requires OAuth user credentials (plus a bearer token for reads). Install Tweepy, export your environment variables, and run it while the xMCP server is up:
 
 ```bash
 pip install tweepy
+export X_API_KEY=your_api_key
+export X_API_SECRET=your_api_secret
+export X_OAUTH_ACCESS_TOKEN=your_access_token
+export X_OAUTH_ACCESS_TOKEN_SECRET=your_access_token_secret
+export X_BEARER_TOKEN=your_bearer_token
+export POLL_INTERVAL_SECONDS=60
 python listener.py
 ```
 
-Then tag your bot from another account to see it respond. Replace the placeholder Grok call with your real MCP/Grok invocation when ready.
+Then tag your bot from another account to see it respond. Replace the placeholder Grok call with your real xMCP/Grok invocation when ready.
 
 ## Phase 5: Iterate toward full autonomy
 
-- Wire the listener to call Grok through the MCP server.
+- Wire the listener to call Grok through the xMCP server.
 - Add Docker/Docker Compose if you want a containerized workflow.
 - Persist state (SQLite) to avoid reprocessing old mentions.
 - Extend with proxies, CrewAI/AutoGen, or other agent frameworks.
