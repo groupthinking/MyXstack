@@ -58,7 +58,8 @@ export class GrokService {
       const data: any = await response.json();
       const analysisText = data.choices[0]?.message?.content || '';
       
-      return this.parseGrokResponse(analysisText, mention);
+      // Use the root post ID from the thread, not the mention text
+      return this.parseGrokResponse(analysisText, thread.root_post.id);
     } catch (error) {
       console.error('Error calling Grok API:', error);
       // Fallback to simulation
