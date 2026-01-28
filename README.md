@@ -1,7 +1,6 @@
 # MyXstack
 
-This repository hosts a lightweight, step-by-step guide for setting up an autonomous X (Twitter) agent system that detects mentions, pulls thread context, and routes reasoning through Grok via the xMCP server. Follow the phases below to get from zero to a working "tag and watch" prototype.
-
+This repository hosts a lightweight, step-by-step guide for setting up an autonomous X (Twitter) agent system that detects mentions, pulls thread context, and routes reasoning through Grok via the xMCP server. Follow 
 ## Phase 1: Gather prerequisites & accounts (1–2 hours)
 
 ### X developer account & app
