@@ -255,50 +255,6 @@ console.log(`Confidence: ${analysis.confidence}`);
 console.log(`Reasoning: ${analysis.explanation}`);
 ```
 
-## Advanced Git Commands
-
-### git stash
-
-Temporarily save uncommitted work so you can switch branches safely.
-
-```bash
-# Save current changes with a message
-git stash push -m "wip: listener tweaks"
-
-# Re-apply the most recent stash
-git stash pop
-```
-
-### git cherry-pick
-
-Apply a specific commit from another branch onto your current branch.
-
-```bash
-# Cherry-pick a single commit by SHA
-git cherry-pick a1b2c3d4
-```
-
-### git revert
-
-Create a new commit that undoes a previous commit (safe for shared branches).
-
-```bash
-# Revert the most recent commit
-git revert HEAD
-```
-
-### git reset
-
-Move the branch pointer back to an earlier commit (use with care on shared branches).
-
-```bash
-# Keep changes staged but remove the last commit
-git reset --soft HEAD~1
-
-# Discard the last commit and working tree changes
-git reset --hard HEAD~1
-```
-
 ## Troubleshooting
 
 ### No mentions detected
