@@ -1,0 +1,8 @@
+fastmcp
+httpx
+python-dotenv
+xai-sdk
+fastapi
+uvicorn
+requests
+tweepy
