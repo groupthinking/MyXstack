@@ -1,6 +1,6 @@
 # MyXstack
 
-This repository hosts a lightweight, step-by-step guide for setting up an autonomous X (Twitter) agent system that  acts based on thread context & reasoning, through Grok via the xMCP server. 
+This repository hosts a lightweight, step-by-step guide for setting up an autonomous X (Twitter) agent system that acts based on thread context & reasoning, through Grok via the xMCP server. 
 
 ## Phase 1: Gather prerequisites & accounts (1–2 hours)
 
