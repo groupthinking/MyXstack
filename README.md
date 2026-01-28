@@ -20,9 +20,8 @@ This repository hosts a lightweight, step-by-step guide for setting up an autono
 3. Note the bot user ID (you can fetch this via the API later).
 
 ### xAI / Grok API key
-1. Ensure you have an X Premium+ subscription for API access.
-2. Visit <https://console.x.ai>, open the API keys section, and create a key that starts with `xai-`.
-3. Store the key securely.
+. Visit <https://console.x.ai>, open the API keys section, and create a key that starts with `xai-`.
+. Store the key securely.
 
 ### Local tooling
 - Install Python 3.9+ (3.10–3.13 recommended).
