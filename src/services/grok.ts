@@ -21,11 +21,12 @@ export class GrokService {
    * Analyze a mention and thread context to determine appropriate action
    * @param mention - The text content of the mention to analyze
    * @param thread - The thread context including root post and replies
+   * @param mentionPostId - The ID of the post where the agent was mentioned
    * @returns Analysis with recommended action
    */
-  async analyzeAndDecide(mention: string, thread: XThread): Promise<GrokAnalysis> {
+  async analyzeAndDecide(mention: string, thread: XThread, mentionPostId: string): Promise<GrokAnalysis> {
     if (this.simulationMode) {
-      return this.simulateAnalysis(mention, thread);
+      return this.simulateAnalysis(mention, thread, mentionPostId);
     }
 
     try {
@@ -61,12 +62,12 @@ export class GrokService {
       const data: any = await response.json();
       const analysisText = data.choices[0]?.message?.content || '';
       
-      // Use the root post ID from the thread, not the mention text
-      return this.parseGrokResponse(analysisText, thread.root_post.id);
+      // Use the mention post ID to reply to the specific post that mentioned the agent
+      return this.parseGrokResponse(analysisText, mentionPostId);
     } catch (error) {
       console.error('Error calling Grok API:', error);
       // Fallback to simulation
-      return this.simulateAnalysis(mention, thread);
+      return this.simulateAnalysis(mention, thread, mentionPostId);
     }
   }
 
@@ -145,7 +146,7 @@ export class GrokService {
   /**
    * Simulate Grok analysis for testing
    */
-  private simulateAnalysis(mention: string, thread: XThread): GrokAnalysis {
+  private simulateAnalysis(mention: string, thread: XThread, mentionPostId: string): GrokAnalysis {
     console.log('🤖 Simulated Grok Analysis:');
     console.log(`   Analyzing: "${mention}"`);
     
@@ -159,7 +160,7 @@ export class GrokService {
       const analysis: GrokAnalysis = {
         action: {
           type: 'reply',
-          target_post_id: thread.root_post.id,
+          target_post_id: mentionPostId,
           content: 'Thanks for reaching out! I\'ve analyzed your question and here\'s my insight: Based on the context, I\'d recommend exploring this topic further. Let me know if you need more specific information!',
           reasoning: 'Detected a question, providing helpful response',
         },
@@ -174,7 +175,7 @@ export class GrokService {
       const analysis: GrokAnalysis = {
         action: {
           type: 'analyze',
-          target_post_id: thread.root_post.id,
+          target_post_id: mentionPostId,
           reasoning: 'No clear action needed, just acknowledgment',
         },
         confidence: 0.7,
