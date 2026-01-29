@@ -1,0 +1,33 @@
+{
+  "name": "myxstack",
+  "version": "1.0.0",
+  "description": "Autonomous AI agent system on X (Twitter) using Grok and xMCP",
+  "main": "dist/index.js",
+  "type": "module",
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/index.js",
+    "dev": "tsc && node dist/index.js",
+    "clean": "rm -rf dist",
+    "examples": "tsc && node dist/examples.js"
+  },
+  "keywords": [
+    "twitter",
+    "x",
+    "ai",
+    "agent",
+    "grok",
+    "mcp",
+    "autonomous"
+  ],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.0.4",
+    "dotenv": "^16.4.5"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.5",
+    "typescript": "^5.7.2"
+  }
+}
