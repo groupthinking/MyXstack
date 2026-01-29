@@ -1,0 +1,26 @@
+# Labels based on file paths
+# See https://github.com/actions/labeler for configuration options
+
+documentation:
+  - changed-files:
+      - any-glob-to-any-file:
+          - '*.md'
+          - 'docs/**'
+
+source:
+  - changed-files:
+      - any-glob-to-any-file:
+          - 'src/**'
+
+config:
+  - changed-files:
+      - any-glob-to-any-file:
+          - '*.json'
+          - '*.yml'
+          - '*.yaml'
+          - '.env*'
+
+workflows:
+  - changed-files:
+      - any-glob-to-any-file:
+          - '.github/**'
