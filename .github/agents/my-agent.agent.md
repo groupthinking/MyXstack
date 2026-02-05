@@ -8,7 +8,10 @@ name:molt
 description: https://www.molt.bot/
 ---
 
-# My Agent
+# molt Agent
 
-[Describe what your agent does here...](https://www.molt.bot/
----)
+This agent assists with tasks related to the molt project. You can ask it to:
+- [Capability 1]
+- [Capability 2]
+
+For more information, visit https://www.molt.bot/.
