@@ -1,47 +1,12 @@
-# PR Title Recommendations
+# PR Title Quick Reference
 
-## For PR #4: "updates to the `README.md`"
+## Conventional Commits Format
 
-### Current Issue
-The PR title "updates to the `README.md`" does not follow the conventional commits format required by our PR validation workflow.
+All PR titles should follow the [Conventional Commits](https://www.conventionalcommits.org/) format:
 
-### Recommended Title
-Based on the changes in PR #4, the title should be:
+**Format**: `<type>(<scope>): <description>`
 
-```
-docs: update README.md and simplify xAI instructions
-```
-
-### Why This Format?
-
-1. **Type**: `docs` - This PR primarily contains documentation changes
-2. **Description**: Clear, concise explanation of what was changed
-3. **Follows Convention**: Matches the pattern `^(feat|fix|docs|style|refactor|test|chore|perf|ci|build|revert)(\(.+\))?:`
-
-### Alternative Titles (if applicable)
-
-If the PR includes multiple types of changes, consider:
-- `docs: revise README and update setup instructions`
-- `docs(readme): simplify xAI setup guide and update examples`
-
-### How to Update PR Title
-
-1. Go to the PR page on GitHub
-2. Click the "Edit" button next to the PR title
-3. Update the title to follow the format above
-4. Save changes
-
-The PR validation workflow will then pass with no warnings.
-
-## For Future PRs
-
-Please refer to [CONTRIBUTING.md](../CONTRIBUTING.md) for comprehensive guidelines on:
-- PR title format (conventional commits)
-- PR description requirements
-- Code style guidelines
-- Testing requirements
-
-### Quick Reference
+### Types and Examples
 
 | Type | When to Use | Example |
 |------|-------------|---------|
@@ -51,6 +16,38 @@ Please refer to [CONTRIBUTING.md](../CONTRIBUTING.md) for comprehensive guidelin
 | `refactor` | Code restructuring | `refactor(grok): simplify AI decision logic` |
 | `chore` | Maintenance | `chore: update dependencies to latest versions` |
 | `ci` | CI/CD changes | `ci: add PR validation workflow` |
+| `style` | Formatting changes | `style: fix indentation in config files` |
+| `test` | Test updates | `test: add unit tests for agent service` |
+| `perf` | Performance improvements | `perf(xapi): optimize mention polling` |
+
+### How to Update PR Title
+
+1. Go to your PR page on GitHub
+2. Click the "Edit" button next to the PR title
+3. Update the title to follow the format above
+4. Save changes
+
+The PR validation workflow will then pass with no warnings.
+
+## Common Scenarios
+
+### Documentation Updates
+**Problem**: PR title like "updates to the `README.md`"  
+**Solution**: `docs: update README.md and simplify xAI instructions`
+
+### Multiple File Changes
+**Problem**: PR title like "various fixes"  
+**Solution**: Choose the primary change type:
+- `fix: resolve polling and authentication issues`
+- `refactor: restructure API client and services`
+
+### Feature Additions
+**Problem**: PR title like "new stuff"  
+**Solution**: `feat(agent): implement autonomous decision-making`
+
+## Full Guidelines
+
+For comprehensive contribution guidelines, see [CONTRIBUTING.md](/CONTRIBUTING.md).
 
 ---
 

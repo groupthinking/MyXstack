@@ -27,7 +27,7 @@ Closes #
 
 ## Checklist
 
-- [ ] PR title follows [conventional commits format](../CONTRIBUTING.md#pr-title-format) (e.g., `feat:`, `fix:`, `docs:`)
+- [ ] PR title follows [conventional commits format](/CONTRIBUTING.md#pr-title-format) (e.g., `feat:`, `fix:`, `docs:`)
 - [ ] PR description is clear and complete
 - [ ] Code follows project style guidelines
 - [ ] Changes are focused and reasonably sized
