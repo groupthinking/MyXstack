@@ -27,11 +27,21 @@ jobs:
               if (path.endsWith('.css') || path.endsWith('.scss') || path.endsWith('.sass')) labels.add('styling');
             }
 
-            if (labels.size > 0) {
+            // Fetch existing labels in the repository to avoid "Label does not exist" errors
+            const { data: repoLabels } = await github.rest.issues.listLabelsForRepo({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              per_page: 100,
+            });
+
+            const existingLabelNames = new Set(repoLabels.map(label => label.name));
+            const labelsToAdd = Array.from(labels).filter(label => existingLabelNames.has(label));
+
+            if (labelsToAdd.length > 0) {
               await github.rest.issues.addLabels({
                 owner: context.repo.owner,
                 repo: context.repo.repo,
                 issue_number: context.payload.pull_request.number,
-                labels: Array.from(labels)
+                labels: labelsToAdd,
               });
             }
