@@ -12,19 +12,26 @@ jobs:
             const { data: files } = await github.rest.pulls.listFiles({
               owner: context.repo.owner,
               repo: context.repo.repo,
-              pull_number: context.payload.pull_request.number,
+              pull_number: context.payload.pull_request.number
             });
+
             const labels = new Set();
+
             for (const file of files) {
-              if (file.filename.endsWith('.js') || file.filename.endsWith('.ts')) labels.add('logic');
-              if (file.filename.includes('test')) labels.add('testing');
-              if (file.filename.includes('.github/workflows')) labels.add('ci-cd');
+              const path = file.filename;
+              if (path.includes('docs/') || path.endsWith('.md')) labels.add('documentation');
+              if (path.includes('test/') || path.includes('.test.') || path.includes('.spec.')) labels.add('tests');
+              if (path.includes('.github/workflows/')) labels.add('ci/cd');
+              if (path.endsWith('.js') || path.endsWith('.ts') || path.endsWith('.jsx') || path.endsWith('.tsx')) labels.add('javascript');
+              if (path.endsWith('.py')) labels.add('python');
+              if (path.endsWith('.css') || path.endsWith('.scss') || path.endsWith('.sass')) labels.add('styling');
             }
+
             if (labels.size > 0) {
               await github.rest.issues.addLabels({
                 owner: context.repo.owner,
                 repo: context.repo.repo,
                 issue_number: context.payload.pull_request.number,
-                labels: Array.from(labels),
+                labels: Array.from(labels)
               });
             }
