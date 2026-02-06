@@ -129,7 +129,8 @@ export class AutonomousAgent {
       console.log('\n🤖 Analyzing with Grok AI...');
       const analysis = await this.grokService.analyzeAndDecide(
         mention.post.text,
-        thread
+        thread,
+        mention.post.id
       );
 
       console.log(`   Action: ${analysis.action.type.toUpperCase()}`);
