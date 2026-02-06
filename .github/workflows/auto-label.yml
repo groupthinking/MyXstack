@@ -17,3 +17,5 @@ jobs:
 
       - name: Label PR based on files changed
         uses: actions/labeler@v5
+        with:
+          sync-labels: true

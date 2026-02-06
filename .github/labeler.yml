@@ -16,8 +16,8 @@ config:
   - changed-files:
       - any-glob-to-any-file:
           - '*.json'
-          - '*.yml'
-          - '*.yaml'
+          - '**/*.yml'
+          - '**/*.yaml'
           - '.env*'
 
 workflows:
