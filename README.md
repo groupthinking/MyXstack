@@ -115,3 +115,13 @@ Then tag your bot from another account to see it respond. Replace the placeholde
 
 ## Current status
 Start with Phases 1–4 today. If you hit a snag, share the exact output/error and we can debug together.
+
+## Contributing
+
+We welcome contributions! Please see [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines on:
+- PR title format (conventional commits)
+- Code style and conventions
+- Testing requirements
+- How to submit pull requests
+
+For quick reference on PR titles, see [.github/PR_TITLE_GUIDE.md](.github/PR_TITLE_GUIDE.md).
