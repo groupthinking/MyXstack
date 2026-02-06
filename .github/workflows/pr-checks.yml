@@ -10,31 +10,35 @@ jobs:
         with:
           script: |
             const pr = context.payload.pull_request;
-            const issues = [];
+            const errors = [];
+            const warnings = [];
 
             if (pr.title.length < 10) {
-              issues.push('❌ PR title too short (minimum 10 characters)');
+              errors.push('❌ PR title too short (minimum 10 characters)');
             }
             if (!/^(feat|fix|docs|style|refactor|test|chore|perf|ci|build|revert)(\(.+\))?:/.test(pr.title)) {
-              issues.push('⚠️ PR title should follow conventional commits format');
+              warnings.push('⚠️ PR title should follow conventional commits format');
             }
 
             if (!pr.body || pr.body.length < 20) {
-              issues.push('❌ PR description is required (minimum 20 characters)');
+              errors.push('❌ PR description is required (minimum 20 characters)');
             }
 
             const totalChanges = (pr.additions || 0) + (pr.deletions || 0);
             if (totalChanges > 500) {
-              issues.push(`⚠️ Large PR detected (${totalChanges} lines changed)`);
+              warnings.push(`⚠️ Large PR detected (${totalChanges} lines changed)`);
             }
 
-            if (issues.length > 0) {
-              const comment = `## 🔍 PR Validation\n\n${issues.join('\n')}`;
+            const allMessages = [...errors, ...warnings];
+            if (allMessages.length > 0) {
+              const comment = `## 🔍 PR Validation\n\n${allMessages.join('\n')}`;
               await github.rest.issues.createComment({
                 owner: context.repo.owner,
                 repo: context.repo.repo,
                 issue_number: pr.number,
                 body: comment
               });
-              core.setFailed('PR validation failed');
+              if (errors.length > 0) {
+                core.setFailed('PR validation failed');
+              }
             }
