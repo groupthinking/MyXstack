@@ -1,6 +1,16 @@
 # MyXstack
 
-This repository hosts a lightweight, step-by-step guide for setting up an autonomous X (Twitter) agent system that acts based on thread context & reasoning, through Grok via the xMCP server. 
+This repository hosts a lightweight, step-by-step guide for setting up an autonomous X (Twitter) agent system that acts based on thread context & reasoning, through Grok via the xMCP server.
+
+## Key Features
+
+### Intelligent Reply Targeting
+The agent uses context-aware reply targeting to ensure natural conversation flow. When mentioned in a thread, the agent replies directly to the specific post where it was mentioned, rather than always replying to the thread root. This creates more coherent conversations by:
+- Maintaining proper reply chains in multi-participant discussions
+- Ensuring replies appear in the correct context within the thread
+- Allowing the agent to participate naturally in nested conversations
+
+The Grok service receives the mention post ID and passes it through the analysis pipeline, so the agent's response targets the exact post that triggered the mention, improving the conversational experience for users.
 
 ## Phase 1: Gather prerequisites & accounts (1–2 hours)
 
