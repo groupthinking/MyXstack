@@ -26,6 +26,7 @@ async function main() {
     // Initialize MCP server (runs in background)
     console.log('🌐 Initializing xMCP server...');
     const mcpServer = new XMCPServer(config.xApiConfig);
+    await mcpServer.start();
     console.log('✅ xMCP server ready\n');
 
     // Initialize and start autonomous agent

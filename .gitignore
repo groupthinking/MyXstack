@@ -1,8 +1,15 @@
 node_modules/
 dist/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.venv/
+venv/
 .env
+.env.local
 .DS_Store
 *.log
 .vscode/
 .idea/
-__pycache__/
+.xmcp/

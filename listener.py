@@ -1,128 +1,152 @@
 import os
 import time
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
+from typing import Optional
 
+import requests
 import tweepy
-from tweepy.errors import TweepyException
+from dotenv import load_dotenv
+from xai_sdk import Client
+from xai_sdk.chat import user
+from xai_sdk.tools import mcp
+
+LAST_SEEN_PATH = Path(os.getenv("XMCP_LAST_SEEN_PATH", "~/.xmcp/last_seen.txt")).expanduser()
 
 
-def require_env(name: str) -> str:
-    value = os.getenv(name)
-    if not value:
-        raise RuntimeError(f"Missing required environment variable: {name}")
-    return value
+def load_env() -> None:
+    env_path = Path(__file__).resolve().parent / ".env"
+    if env_path.exists():
+        load_dotenv(env_path)
 
 
-def parse_poll_interval() -> int:
-    value = os.getenv("POLL_INTERVAL_SECONDS", "60")
-    try:
-        interval = int(value)
-    except ValueError:
-        print(f"Invalid POLL_INTERVAL_SECONDS '{value}', defaulting to 60.")
-        return 60
-    if interval <= 0:
-        print("POLL_INTERVAL_SECONDS must be positive; defaulting to 60.")
-        return 60
-    return interval
+def save_last_seen(value: str) -> None:
+    LAST_SEEN_PATH.parent.mkdir(parents=True, exist_ok=True)
+    LAST_SEEN_PATH.write_text(value, encoding="utf-8")
+
+
+def load_last_seen() -> Optional[str]:
+    if not LAST_SEEN_PATH.exists():
+        return None
+    return LAST_SEEN_PATH.read_text(encoding="utf-8").strip() or None
 
 
 def build_client() -> tweepy.Client:
+    access_token = os.getenv("X_ACCESS_TOKEN") or os.getenv("X_OAUTH_ACCESS_TOKEN")
+    access_secret = os.getenv("X_ACCESS_SECRET") or os.getenv("X_OAUTH_ACCESS_TOKEN_SECRET")
     return tweepy.Client(
-        bearer_token=require_env("X_BEARER_TOKEN"),
-        consumer_key=require_env("X_API_KEY"),
-        consumer_secret=require_env("X_API_SECRET"),
-        access_token=require_env("X_OAUTH_ACCESS_TOKEN"),
-        access_token_secret=require_env("X_OAUTH_ACCESS_TOKEN_SECRET"),
+        bearer_token=os.getenv("X_BEARER_TOKEN"),
+        consumer_key=os.getenv("X_API_KEY"),
+        consumer_secret=os.getenv("X_API_SECRET"),
+        access_token=access_token,
+        access_token_secret=access_secret,
+        wait_on_rate_limit=True,
     )
 
 
-def fetch_thread_context(client: tweepy.Client, conversation_id: str) -> str | None:
-    try:
-        thread = client.search_recent_tweets(
-            query=f"conversation_id:{conversation_id}",
-            tweet_fields=["text", "author_id"],
-        )
-    except TweepyException as exc:
-        print(f"Failed to fetch thread context for {conversation_id}: {exc}")
-        return None
-    tweets = thread.data or []
-    return "\n".join(tweet.text for tweet in tweets)
+def get_grok_reply(prompt: str) -> str:
+    api_key = os.getenv("XAI_API_KEY", "").strip()
+    if not api_key:
+        return "Missing XAI_API_KEY."
+    model = os.getenv("XAI_MODEL", "grok-4-1-fast")
+    server_url = os.getenv("MCP_SERVER_URL", "http://127.0.0.1:8000/mcp")
+
+    client = Client(api_key=api_key)
+    chat = client.chat.create(
+        model=model,
+        tools=[mcp(server_url=server_url)],
+    )
+    chat.append(user(prompt))
+
+    response_text = ""
+    for _, chunk in chat.stream():
+        if chunk.content:
+            response_text += chunk.content
+    return response_text.strip() or "Thinking..."
+
+
+def push_timeline_card(title: str, body: str, metadata: dict) -> None:
+    timeline_url = os.getenv("TIMELINE_API_URL", "http://127.0.0.1:8080")
+    user_id = os.getenv("TIMELINE_USER_ID", "default")
+    payload = {
+        "user_id": user_id,
+        "title": title,
+        "body": body,
+        "posted_by": "x-agent",
+        "actions": ["Approve", "Reject", "Snooze"],
+        "metadata": metadata,
+    }
+    requests.post(f"{timeline_url}/v1/timeline/items", json=payload, timeout=10)
+
+
+def ensure_agent_registered() -> None:
+    timeline_url = os.getenv("TIMELINE_API_URL", "http://127.0.0.1:8080")
+    payload = {
+        "id": "x-agent",
+        "name": "X Agent",
+        "description": "Handles @mentions and X actions.",
+        "status": "online",
+        "endpoint": "x",
+        "tags": ["x", "social"],
+    }
+    requests.post(f"{timeline_url}/v1/a2a/agents", json=payload, timeout=10)
 
 
 def main() -> None:
-    try:
-        client = build_client()
-        bot = client.get_me().data
-    except (RuntimeError, TweepyException) as exc:
-        print(f"Unable to initialize client: {exc}")
-        return
+    load_env()
+    client = build_client()
+    me = client.get_me().data
+    if not me:
+        raise RuntimeError("Could not resolve authenticated X user for listener")
+    bot_id = me.id
+    ensure_agent_registered()
 
-    if not bot:
-        print("Unable to fetch bot user info.")
-        return
-
-    bot_id = bot.id
-    poll_interval = parse_poll_interval()
-    last_seen_id = None
-    last_checked = datetime.now(timezone.utc) - timedelta(minutes=10)
+    last_seen = load_last_seen()
+    start_time = datetime.now(timezone.utc) - timedelta(minutes=10)
+    if last_seen:
+        try:
+            start_time = datetime.fromisoformat(last_seen)
+        except ValueError:
+            pass
 
     while True:
-        try:
-            mentions_response = client.get_users_mentions(
-                id=bot_id,
-                since_id=last_seen_id,
-                tweet_fields=["created_at", "conversation_id"],
-            )
-        except TweepyException as exc:
-            print(f"Failed to fetch mentions: {exc}")
-            time.sleep(poll_interval)
-            continue
+        mentions = client.get_users_mentions(
+            id=bot_id,
+            start_time=start_time,
+            tweet_fields=["conversation_id", "created_at", "author_id", "text"],
+        )
+        for mention in mentions.data or []:
+            context = mention.text
+            prompt = f"""
+You are an autonomous X agent bot. You were mentioned in this thread:
 
-        mentions = mentions_response.data or []
-        processed_ids: list[int] = []
-        had_failure = False
+{context}
 
-        for mention in reversed(mentions):
-            if mention.created_at and mention.created_at < last_checked:
-                processed_ids.append(int(mention.id))
-                continue
-            if not mention.conversation_id:
-                processed_ids.append(int(mention.id))
-                continue
+Analyze the request/intent. Use available tools to respond helpfully.
+Always reply directly to the mentioning post. Be concise and actionable.
+"""
+            grok_reply = get_grok_reply(prompt)
 
-            context = fetch_thread_context(client, str(mention.conversation_id))
-            if context is None:
-                print(f"Skipping mention {mention.id} due to thread fetch failure.")
-                had_failure = True
-                break
-
-            prompt = (
-                "You were tagged here:\n"
-                f"{context}\n\n"
-                "Reason through this step-by-step and use X tools via xMCP to respond autonomously.\n"
-                "Server: http://127.0.0.1:8000/mcp"
+            client.create_tweet(
+                text=grok_reply[:280],
+                in_reply_to_tweet_id=mention.id,
             )
 
-            # TODO: Replace with Grok invocation via xMCP.
-            _ = prompt
+            push_timeline_card(
+                title=f"New mention {mention.id}",
+                body=context,
+                metadata={
+                    "mention_id": mention.id,
+                    "author_id": mention.author_id,
+                    "conversation_id": mention.conversation_id,
+                    "reply_preview": grok_reply[:280],
+                },
+            )
 
-            try:
-                client.create_tweet(
-                    text="Processing your tag... (full response coming soon)",
-                    in_reply_to_tweet_id=mention.id,
-                )
-            except TweepyException as exc:
-                print(f"Failed to reply to mention {mention.id}: {exc}")
-                had_failure = True
-                break
+            start_time = mention.created_at or datetime.now(timezone.utc)
+            save_last_seen(start_time.isoformat())
 
-            processed_ids.append(int(mention.id))
-
-        if processed_ids:
-            last_seen_id = max(processed_ids)
-            if not had_failure:
-                last_checked = datetime.now(timezone.utc)
-        time.sleep(poll_interval)
+        time.sleep(60)
 
 
 if __name__ == "__main__":
