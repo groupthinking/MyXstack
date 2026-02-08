@@ -11,6 +11,7 @@ export class AutonomousAgent {
   private grokService: GrokService;
   private config: AgentConfig;
   private processedMentions: Set<string> = new Set();
+  private static readonly MAX_PROCESSED_MENTIONS = 10000;
   private isRunning: boolean = false;
   private pollingIntervalId: NodeJS.Timeout | null = null;
   private isProcessing: boolean = false;
@@ -94,6 +95,15 @@ export class AutonomousAgent {
       for (const mention of newMentions) {
         await this.processMention(mention);
         this.processedMentions.add(mention.post.id);
+      }
+
+      // Prune oldest entries to prevent unbounded memory growth
+      if (this.processedMentions.size > AutonomousAgent.MAX_PROCESSED_MENTIONS) {
+        const excess = this.processedMentions.size - AutonomousAgent.MAX_PROCESSED_MENTIONS;
+        const iter = this.processedMentions.values();
+        for (let i = 0; i < excess; i++) {
+          this.processedMentions.delete(iter.next().value as string);
+        }
       }
     } catch (error) {
       console.error('❌ Error in processing loop:', error);
