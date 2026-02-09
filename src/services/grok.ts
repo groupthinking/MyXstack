@@ -58,8 +58,21 @@ export class GrokService {
         throw new Error(`Grok API error: ${response.status}`);
       }
 
-      const data: any = await response.json();
-      const analysisText = data.choices[0]?.message?.content || '';
+      const data: unknown = await response.json();
+      
+      // Validate and narrow response structure
+      if (
+        typeof data !== 'object' || 
+        data === null ||
+        !('choices' in data) || 
+        !Array.isArray(data.choices) || 
+        data.choices.length === 0
+      ) {
+        throw new Error('Invalid response structure from Grok API: missing or empty choices array');
+      }
+      
+      const typedData = data as { choices: Array<{ message?: { content?: string } }> };
+      const analysisText = typedData.choices[0]?.message?.content || '';
       
       // Use the root post ID from the thread, not the mention text
       return this.parseGrokResponse(analysisText, thread.root_post.id);
