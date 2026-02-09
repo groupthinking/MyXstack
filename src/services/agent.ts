@@ -92,9 +92,9 @@ export class AutonomousAgent {
       console.log(`\n📬 [${new Date().toLocaleTimeString()}] Found ${newMentions.length} new mention(s)!\n`);
 
       // Process in reverse (oldest-first) since API returns newest-first
-      for (const mention of [...newMentions].reverse()) {
-        await this.processMention(mention);
-        this.processedMentions.add(mention.post.id);
+      for (let i = newMentions.length - 1; i >= 0; i--) {
+        await this.processMention(newMentions[i]);
+        this.processedMentions.add(newMentions[i].post.id);
       }
 
       // Prune oldest entries to prevent unbounded memory growth
@@ -102,14 +102,7 @@ export class AutonomousAgent {
       // This removes the oldest entries (first inserted) from the Set
       if (this.processedMentions.size > AutonomousAgent.MAX_PROCESSED_MENTIONS) {
         const excess = this.processedMentions.size - AutonomousAgent.MAX_PROCESSED_MENTIONS;
-        const iter = this.processedMentions.values();
-        for (let i = 0; i < excess; i++) {
-          const { value, done } = iter.next();
-          if (done) {
-            break;
-          }
-          this.processedMentions.delete(value);
-        }
+        Array.from(this.processedMentions).slice(0, excess).forEach(id => this.processedMentions.delete(id));
       }
     } catch (error) {
       console.error('❌ Error in processing loop:', error);
