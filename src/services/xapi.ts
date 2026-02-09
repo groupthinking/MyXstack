@@ -44,17 +44,31 @@ export class XAPIClient {
         throw new Error('Failed to get user ID from response');
       }
 
-      const mentionsResponse = await this.makeXAPIRequest(
-        `https://api.twitter.com/2/users/${userId}/mentions?max_results=10&expansions=author_id&tweet.fields=created_at,conversation_id,in_reply_to_user_id,referenced_tweets`,
-        'GET'
-      );
+      const params = new URLSearchParams({
+        max_results: '10',
+        expansions: 'author_id',
+        'tweet.fields': 'created_at,conversation_id,in_reply_to_user_id,referenced_tweets',
+      });
+      if (this.lastMentionId) {
+        params.set('since_id', this.lastMentionId);
+      }
+      const mentionsUrl = `https://api.twitter.com/2/users/${userId}/mentions?${params.toString()}`;
+
+      const mentionsResponse = await this.makeXAPIRequest(mentionsUrl, 'GET');
 
       if (!mentionsResponse || !Array.isArray(mentionsResponse.data)) {
         console.warn('Invalid response from X API (mentions)');
         return [];
       }
 
-      return this.parseMentions(mentionsResponse.data);
+      const mentions = this.parseMentions(mentionsResponse.data);
+
+      // Track the newest mention ID for pagination on the next poll
+      if (mentionsResponse.data.length > 0) {
+        this.lastMentionId = mentionsResponse.data[0].id;
+      }
+
+      return mentions;
     } catch (error) {
       console.error('Error fetching mentions:', error);
       return [];
@@ -77,7 +91,12 @@ export class XAPIClient {
         'GET'
       );
 
-      return this.parseThread(response.data || []);
+      if (!response || !Array.isArray(response.data)) {
+        console.warn('Unexpected response shape from X API (thread): data is not an array');
+        return null;
+      }
+
+      return this.parseThread(response.data);
     } catch (error) {
       console.error('Error fetching thread:', error);
       return null;
@@ -181,10 +200,10 @@ export class XAPIClient {
     };
   }
 
-  private parseThread(tweets: any[]): XThread | null {
+  private parseThread(tweets: { created_at: string; [key: string]: unknown }[]): XThread | null {
     if (tweets.length === 0) return null;
 
-    const sorted = tweets.sort((a, b) => 
+    const sorted = [...tweets].sort((a, b) => 
       new Date(a.created_at).getTime() - new Date(b.created_at).getTime()
     );
 

@@ -1,0 +1,25 @@
+documentation:
+  - changed-files:
+    - any-glob-to-any-file:
+      - '**/*.md'
+      - 'docs/**'
+
+source:
+  - changed-files:
+    - any-glob-to-any-file:
+      - 'src/**'
+      - '**/*.ts'
+
+config:
+  - changed-files:
+    - any-glob-to-any-file:
+      - '*.json'
+      - '.env*'
+      - 'tsconfig.json'
+
+workflows:
+  - changed-files:
+    - any-glob-to-any-file:
+      - '.github/**'
+      - '**/*.yml'
+      - '**/*.yaml'
