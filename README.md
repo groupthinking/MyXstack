@@ -47,3 +47,13 @@ A2A:
 - `POST /v1/a2a/agents`
 - `GET /v1/a2a/agents/{id}/messages`
 - `POST /v1/a2a/messages`
+
+## Contributing
+
+We welcome contributions! Please see [CONTRIBUTING.md](/CONTRIBUTING.md) for guidelines on:
+- PR title format (conventional commits)
+- Code style and conventions
+- Testing requirements
+- How to submit pull requests
+
+For quick reference on PR titles, see [.github/PR_TITLE_GUIDE.md](/.github/PR_TITLE_GUIDE.md).
