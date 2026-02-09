@@ -195,7 +195,7 @@ export class XAPIClient {
     };
   }
 
-  private parseThread(tweets: { created_at: string; [key: string]: any }[]): XThread | null {
+  private parseThread(tweets: { created_at: string; [key: string]: unknown }[]): XThread | null {
     if (tweets.length === 0) return null;
 
     const sorted = [...tweets].sort((a, b) =>
