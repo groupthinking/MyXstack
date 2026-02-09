@@ -59,7 +59,7 @@ export class GrokService {
         throw new Error(`Grok API error: ${response.status}`);
       }
 
-      const data: any = await response.json();
+      const data = await response.json() as { choices: Array<{ message?: { content?: string } }> };
       const analysisText = data.choices[0]?.message?.content || '';
       
       // Use the mention post ID to reply to the specific post that mentioned the agent

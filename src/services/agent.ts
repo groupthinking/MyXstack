@@ -14,6 +14,7 @@ export class AutonomousAgent {
   private isRunning: boolean = false;
   private pollingIntervalId: NodeJS.Timeout | null = null;
   private isProcessing: boolean = false;
+  private static readonly MAX_PROCESSED_MENTIONS = 10_000;
 
   constructor(config: AgentConfig, xClient: XAPIClient) {
     this.config = config;
@@ -90,10 +91,20 @@ export class AutonomousAgent {
 
       console.log(`\n📬 [${new Date().toLocaleTimeString()}] Found ${newMentions.length} new mention(s)!\n`);
 
-      // Process each mention
-      for (const mention of newMentions) {
+      // Process mentions oldest-first (API returns newest-first) for chronological Set insertion
+      for (const mention of [...newMentions].reverse()) {
         await this.processMention(mention);
         this.processedMentions.add(mention.post.id);
+
+        // Prune oldest entries if Set exceeds limit to prevent unbounded memory growth
+        while (this.processedMentions.size > AutonomousAgent.MAX_PROCESSED_MENTIONS) {
+          const iter = this.processedMentions.values();
+          const { value, done } = iter.next();
+          if (done) {
+            break;
+          }
+          this.processedMentions.delete(value);
+        }
       }
     } catch (error) {
       console.error('❌ Error in processing loop:', error);

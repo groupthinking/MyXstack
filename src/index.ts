@@ -7,6 +7,10 @@ import { XAPIClient } from './services/xapi.js';
 import { AutonomousAgent } from './services/agent.js';
 import { XMCPServer } from './mcp/server.js';
 
+// Redirect console.log to stderr to prevent conflict with MCP StdioServerTransport
+// which hijacks stdout for protocol messages
+console.log = (...args: unknown[]) => console.error(...args);
+
 async function main() {
   console.log('═══════════════════════════════════════════════════');
   console.log('  MyXstack - Autonomous AI Agent on X (Twitter)');
