@@ -58,7 +58,10 @@ export class GrokService {
         throw new Error(`Grok API error: ${response.status}`);
       }
 
-      const data = await response.json() as { choices: Array<{ message?: { content?: string } }> };
+      const data = await response.json() as { choices?: Array<{ message?: { content?: string } }> };
+      if (!Array.isArray(data.choices)) {
+        throw new Error('Unexpected Grok API response: missing choices array');
+      }
       const analysisText = data.choices[0]?.message?.content || '';
       
       // Use the root post ID from the thread, not the mention text
@@ -113,9 +116,14 @@ export class GrokService {
       }
 
       const parsed = JSON.parse(jsonMatch[0]);
-      
+
+      const validActions: AgentAction['type'][] = ['reply', 'search', 'generate', 'analyze'];
+      const actionType: AgentAction['type'] = validActions.includes(parsed.action)
+        ? parsed.action
+        : 'analyze';
+
       const action: AgentAction = {
-        type: parsed.action as AgentAction['type'],
+        type: actionType,
         target_post_id: mentionPostId,
         content: parsed.content,
         query: parsed.action === 'search' ? parsed.content : undefined,
