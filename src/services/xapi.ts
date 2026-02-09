@@ -8,6 +8,7 @@ export class XAPIClient {
   private config: XAPIConfig;
   private lastMentionId: string | null = null;
   private simulationMode: boolean = false;
+  private static readonly MAX_MENTIONS_PER_FETCH = 10;
 
   constructor(config: XAPIConfig) {
     this.config = config;
@@ -45,7 +46,7 @@ export class XAPIClient {
       }
 
       const params = new URLSearchParams({
-        max_results: '10',
+        max_results: String(XAPIClient.MAX_MENTIONS_PER_FETCH),
         expansions: 'author_id',
         'tweet.fields': 'created_at,conversation_id,in_reply_to_user_id,referenced_tweets',
       });

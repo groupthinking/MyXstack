@@ -98,6 +98,8 @@ export class AutonomousAgent {
       }
 
       // Prune oldest entries to prevent unbounded memory growth
+      // Note: Set iteration order is insertion order in JavaScript (ES2015+)
+      // This removes the oldest entries (first inserted) from the Set
       if (this.processedMentions.size > AutonomousAgent.MAX_PROCESSED_MENTIONS) {
         const excess = this.processedMentions.size - AutonomousAgent.MAX_PROCESSED_MENTIONS;
         const iter = this.processedMentions.values();
