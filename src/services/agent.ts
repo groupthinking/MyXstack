@@ -97,8 +97,8 @@ export class AutonomousAgent {
       }
 
       // Prune oldest processed mentions to prevent unbounded growth
+      const iter = this.processedMentions.values();
       while (this.processedMentions.size > 1000) {
-        const iter = this.processedMentions.values();
         const { value, done } = iter.next();
         if (done) {
           break;
