@@ -44,10 +44,15 @@ export class XAPIClient {
         throw new Error('Failed to get user ID from response');
       }
 
-      let mentionsUrl = `https://api.twitter.com/2/users/${userId}/mentions?max_results=10&expansions=author_id&tweet.fields=created_at,conversation_id,in_reply_to_user_id,referenced_tweets`;
+      const params = new URLSearchParams({
+        max_results: '10',
+        expansions: 'author_id',
+        'tweet.fields': 'created_at,conversation_id,in_reply_to_user_id,referenced_tweets',
+      });
       if (this.lastMentionId) {
-        mentionsUrl += `&since_id=${this.lastMentionId}`;
+        params.set('since_id', this.lastMentionId);
       }
+      const mentionsUrl = `https://api.twitter.com/2/users/${userId}/mentions?${params.toString()}`;
 
       const mentionsResponse = await this.makeXAPIRequest(mentionsUrl, 'GET');
 
@@ -88,6 +93,11 @@ export class XAPIClient {
 
       if (!response || !response.data) {
         console.warn('Invalid response from X API (thread)');
+        return null;
+      }
+
+      if (!Array.isArray(response.data)) {
+        console.warn('Unexpected response shape from X API (thread): data is not an array');
         return null;
       }
 
