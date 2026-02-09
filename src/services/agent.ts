@@ -91,10 +91,11 @@ export class AutonomousAgent {
 
       console.log(`\n📬 [${new Date().toLocaleTimeString()}] Found ${newMentions.length} new mention(s)!\n`);
 
-      // Process each mention
-      for (const mention of newMentions) {
-        await this.processMention(mention);
-        this.processedMentions.add(mention.post.id);
+      // Process each mention in reverse (oldest first) to maintain chronological Set insertion order
+      // X API returns mentions newest-first, so we reverse to process oldest→newest
+      for (let i = newMentions.length - 1; i >= 0; i--) {
+        await this.processMention(newMentions[i]);
+        this.processedMentions.add(newMentions[i].post.id);
       }
 
       // Prune oldest entries to prevent unbounded memory growth
