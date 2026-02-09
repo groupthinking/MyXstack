@@ -1,0 +1,38 @@
+name: Issue Triage
+on:
+  issues:
+    types: [opened]
+jobs:
+  triage:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/github-script@v7
+        with:
+          script: |
+            const issue = context.payload.issue;
+            const labels = [];
+            const text = `${issue.title} ${issue.body}`.toLowerCase();
+
+            if (text.includes('bug') || text.includes('error')) labels.push('bug');
+            if (text.includes('feature') || text.includes('enhancement')) labels.push('enhancement');
+            if (text.includes('docs') || text.includes('documentation')) labels.push('documentation');
+            if (text.includes('question') || text.includes('help')) labels.push('question');
+            if (text.includes('urgent') || text.includes('critical')) labels.push('priority:high');
+
+            labels.push('needs-triage');
+
+            if (labels.length > 0) {
+              await github.rest.issues.addLabels({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: issue.number,
+                labels: labels
+              });
+            }
+
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: issue.number,
+              body: '👋 Thanks for opening this issue! It has been automatically labeled for triage.'
+            });
