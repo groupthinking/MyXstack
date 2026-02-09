@@ -98,11 +98,17 @@ export class AutonomousAgent {
       }
 
       // Prune oldest entries to prevent unbounded memory growth
-      // Note: Set iteration order is insertion order in JavaScript (ES2015+)
-      // This removes the oldest entries (first inserted) from the Set
+      // Set iteration order is insertion order (ES2015+), so oldest entries come first
       if (this.processedMentions.size > AutonomousAgent.MAX_PROCESSED_MENTIONS) {
         const excess = this.processedMentions.size - AutonomousAgent.MAX_PROCESSED_MENTIONS;
-        Array.from(this.processedMentions).slice(0, excess).forEach(id => this.processedMentions.delete(id));
+        const iter = this.processedMentions.values();
+        for (let i = 0; i < excess; i++) {
+          const { value, done } = iter.next();
+          if (done) {
+            break;
+          }
+          this.processedMentions.delete(value);
+        }
       }
     } catch (error) {
       console.error('❌ Error in processing loop:', error);
