@@ -7,6 +7,8 @@ import { GrokService } from '../services/grok.js';
 import { AgentConfig, Mention, AgentAction } from '../types/index.js';
 
 export class AutonomousAgent {
+  private static readonly MAX_PROCESSED_MENTIONS = 1000;
+  
   private xClient: XAPIClient;
   private grokService: GrokService;
   private config: AgentConfig;
@@ -90,10 +92,17 @@ export class AutonomousAgent {
 
       console.log(`\n📬 [${new Date().toLocaleTimeString()}] Found ${newMentions.length} new mention(s)!\n`);
 
-      // Process each mention
-      for (const mention of newMentions) {
-        await this.processMention(mention);
-        this.processedMentions.add(mention.post.id);
+      // Process each mention (oldest first for chronological Set insertion order)
+      for (let i = newMentions.length - 1; i >= 0; i--) {
+        await this.processMention(newMentions[i]);
+        this.processedMentions.add(newMentions[i].post.id);
+      }
+
+      // Prune oldest entries if Set grows too large (keeping newest MAX_PROCESSED_MENTIONS)
+      if (this.processedMentions.size > AutonomousAgent.MAX_PROCESSED_MENTIONS) {
+        const entriesToDelete = Array.from(this.processedMentions.values())
+          .slice(0, this.processedMentions.size - AutonomousAgent.MAX_PROCESSED_MENTIONS);
+        entriesToDelete.forEach(id => this.processedMentions.delete(id));
       }
     } catch (error) {
       console.error('❌ Error in processing loop:', error);
@@ -129,7 +138,8 @@ export class AutonomousAgent {
       console.log('\n🤖 Analyzing with Grok AI...');
       const analysis = await this.grokService.analyzeAndDecide(
         mention.post.text,
-        thread
+        thread,
+        mention.post.id
       );
 
       console.log(`   Action: ${analysis.action.type.toUpperCase()}`);
