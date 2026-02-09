@@ -65,7 +65,7 @@ export class XAPIClient {
       const mentions = this.parseMentions(mentionsResponse.data);
 
       // Track the newest mention ID for pagination on the next poll
-      if (mentionsResponse.data.length > 0) {
+      if (mentionsResponse.data.length > 0 && mentionsResponse.data[0]?.id) {
         this.lastMentionId = mentionsResponse.data[0].id;
       }
 
