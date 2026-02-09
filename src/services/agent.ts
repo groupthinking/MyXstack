@@ -91,7 +91,8 @@ export class AutonomousAgent {
 
       console.log(`\n📬 [${new Date().toLocaleTimeString()}] Found ${newMentions.length} new mention(s)!\n`);
 
-      // Process each mention (oldest first for proper chronological pruning)
+      // Process each mention (X API returns newest-first, reverse to process oldest first
+      // so Set insertion order matches chronological order for correct pruning)
       for (const mention of [...newMentions].reverse()) {
         await this.processMention(mention);
         this.processedMentions.add(mention.post.id);
