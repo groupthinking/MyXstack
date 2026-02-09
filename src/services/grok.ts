@@ -58,7 +58,7 @@ export class GrokService {
         throw new Error(`Grok API error: ${response.status}`);
       }
 
-      const data: any = await response.json();
+      const data = await response.json() as { choices: Array<{ message?: { content?: string } }> };
       const analysisText = data.choices[0]?.message?.content || '';
       
       // Use the root post ID from the thread, not the mention text
@@ -115,7 +115,7 @@ export class GrokService {
       const parsed = JSON.parse(jsonMatch[0]);
       
       const action: AgentAction = {
-        type: parsed.action as any,
+        type: parsed.action as AgentAction['type'],
         target_post_id: mentionPostId,
         content: parsed.content,
         query: parsed.action === 'search' ? parsed.content : undefined,
