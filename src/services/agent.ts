@@ -90,10 +90,20 @@ export class AutonomousAgent {
 
       console.log(`\n📬 [${new Date().toLocaleTimeString()}] Found ${newMentions.length} new mention(s)!\n`);
 
-      // Process each mention
-      for (const mention of newMentions) {
+      // Process mentions oldest-first (X API returns newest first)
+      for (const mention of [...newMentions].reverse()) {
         await this.processMention(mention);
         this.processedMentions.add(mention.post.id);
+      }
+
+      // Prune oldest processed mentions to prevent unbounded growth
+      while (this.processedMentions.size > 1000) {
+        const iter = this.processedMentions.values();
+        const { value, done } = iter.next();
+        if (done) {
+          break;
+        }
+        this.processedMentions.delete(value);
       }
     } catch (error) {
       console.error('❌ Error in processing loop:', error);
