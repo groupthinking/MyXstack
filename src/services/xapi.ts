@@ -91,6 +91,11 @@ export class XAPIClient {
         return null;
       }
 
+      if (!Array.isArray(response.data)) {
+        console.warn('Unexpected response shape from X API (thread): data is not an array');
+        return null;
+      }
+
       return this.parseThread(response.data);
     } catch (error) {
       console.error('Error fetching thread:', error);
