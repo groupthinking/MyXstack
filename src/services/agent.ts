@@ -91,10 +91,11 @@ export class AutonomousAgent {
 
       console.log(`\n📬 [${new Date().toLocaleTimeString()}] Found ${newMentions.length} new mention(s)!\n`);
 
-      // Process each mention
-      for (const mention of newMentions) {
-        await this.processMention(mention);
-        this.processedMentions.add(mention.post.id);
+      // Process mentions oldest-first (API returns newest-first, so reverse)
+      // This ensures Set insertion order matches chronological order for proper pruning
+      for (let i = newMentions.length - 1; i >= 0; i--) {
+        await this.processMention(newMentions[i]);
+        this.processedMentions.add(newMentions[i].post.id);
       }
 
       // Prune oldest entries to prevent unbounded memory growth
@@ -102,7 +103,11 @@ export class AutonomousAgent {
         const excess = this.processedMentions.size - AutonomousAgent.MAX_PROCESSED_MENTIONS;
         const iter = this.processedMentions.values();
         for (let i = 0; i < excess; i++) {
-          this.processedMentions.delete(iter.next().value as string);
+          const { value, done } = iter.next();
+          if (done) {
+            break;
+          }
+          this.processedMentions.delete(value);
         }
       }
     } catch (error) {
