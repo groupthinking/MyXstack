@@ -12,8 +12,8 @@ source:
 config:
   - changed-files:
     - any-glob-to-any-file:
-      - '*.json'
-      - '.env*'
+      - '**/*.json'
+      - '**/.env*'
 
 workflows:
   - changed-files:
