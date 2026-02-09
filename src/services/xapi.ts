@@ -64,7 +64,7 @@ export class XAPIClient {
       const mentions = this.parseMentions(mentionsResponse.data);
 
       // Track the newest mention ID for pagination (API returns newest-first, so ID is at index 0)
-      if (mentionsResponse.data.length > 0 && mentionsResponse.data[0]?.id) {
+      if (mentionsResponse.data.length > 0 && typeof mentionsResponse.data[0]?.id === 'string') {
         this.lastMentionId = mentionsResponse.data[0].id;
       }
 
