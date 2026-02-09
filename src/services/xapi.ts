@@ -91,6 +91,11 @@ export class XAPIClient {
         return null;
       }
 
+      if (!Array.isArray(response.data)) {
+        console.warn('X API thread response data is not an array');
+        return null;
+      }
+
       return this.parseThread(response.data);
     } catch (error) {
       console.error('Error fetching thread:', error);
