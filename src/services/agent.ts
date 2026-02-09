@@ -11,6 +11,7 @@ export class AutonomousAgent {
   private grokService: GrokService;
   private config: AgentConfig;
   private processedMentions: Set<string> = new Set();
+  private static readonly MAX_PROCESSED_MENTIONS = 10000;
   private isRunning: boolean = false;
   private pollingIntervalId: NodeJS.Timeout | null = null;
   private isProcessing: boolean = false;
@@ -90,10 +91,19 @@ export class AutonomousAgent {
 
       console.log(`\n📬 [${new Date().toLocaleTimeString()}] Found ${newMentions.length} new mention(s)!\n`);
 
-      // Process each mention
-      for (const mention of newMentions) {
-        await this.processMention(mention);
-        this.processedMentions.add(mention.post.id);
+      // Process mentions oldest-first (API returns newest first) to maintain
+      // chronological insertion order in the Set for proper pruning behavior
+      for (let i = newMentions.length - 1; i >= 0; i--) {
+        await this.processMention(newMentions[i]);
+        this.processedMentions.add(newMentions[i].post.id);
+      }
+
+      // Prune oldest entries (from beginning of Set) to prevent unbounded memory growth
+      // Sets maintain insertion order, so slice(0, excess) removes oldest entries
+      if (this.processedMentions.size > AutonomousAgent.MAX_PROCESSED_MENTIONS) {
+        const excess = this.processedMentions.size - AutonomousAgent.MAX_PROCESSED_MENTIONS;
+        const toDelete = Array.from(this.processedMentions).slice(0, excess);
+        toDelete.forEach(id => this.processedMentions.delete(id));
       }
     } catch (error) {
       console.error('❌ Error in processing loop:', error);

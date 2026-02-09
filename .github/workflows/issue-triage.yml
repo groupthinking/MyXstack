@@ -2,6 +2,10 @@ name: Issue Triage
 on:
   issues:
     types: [opened]
+
+permissions:
+  issues: write
+
 jobs:
   triage:
     runs-on: ubuntu-latest
@@ -22,12 +26,23 @@ jobs:
             labels.push('needs-triage');
 
             if (labels.length > 0) {
-              await github.rest.issues.addLabels({
+              // Fetch existing labels to avoid "Label does not exist" errors
+              const { data: repoLabels } = await github.rest.issues.listLabelsForRepo({
                 owner: context.repo.owner,
                 repo: context.repo.repo,
-                issue_number: issue.number,
-                labels: labels
+                per_page: 100,
               });
+              const existingLabelNames = new Set(repoLabels.map(l => l.name));
+              const labelsToAdd = labels.filter(l => existingLabelNames.has(l));
+
+              if (labelsToAdd.length > 0) {
+                await github.rest.issues.addLabels({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  issue_number: issue.number,
+                  labels: labelsToAdd
+                });
+              }
             }
 
             await github.rest.issues.createComment({

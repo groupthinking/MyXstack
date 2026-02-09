@@ -4,6 +4,14 @@
  */
 import { XThread, GrokAnalysis, AgentAction } from '../types/index.js';
 
+interface GrokApiResponse {
+  choices: Array<{
+    message?: {
+      content?: string;
+    };
+  }>;
+}
+
 export class GrokService {
   private apiKey: string;
   private simulationMode: boolean = false;
@@ -59,7 +67,7 @@ export class GrokService {
         throw new Error(`Grok API error: ${response.status}`);
       }
 
-      const data: any = await response.json();
+      const data = await response.json() as GrokApiResponse;
       const analysisText = data.choices[0]?.message?.content || '';
       
       // Use the mention post ID so replies target the specific post where the agent was mentioned
