@@ -92,17 +92,20 @@ export class AutonomousAgent {
 
       console.log(`\n📬 [${new Date().toLocaleTimeString()}] Found ${newMentions.length} new mention(s)!\n`);
 
-      // Process each mention (oldest first for chronological Set insertion order)
+      // Process oldest first: X API returns newest-first, so iterate in reverse
       for (let i = newMentions.length - 1; i >= 0; i--) {
         await this.processMention(newMentions[i]);
         this.processedMentions.add(newMentions[i].post.id);
       }
 
-      // Prune oldest entries if Set grows too large (keeping newest MAX_PROCESSED_MENTIONS)
+      // Prune oldest entries if Set grows too large
       if (this.processedMentions.size > AutonomousAgent.MAX_PROCESSED_MENTIONS) {
-        const entriesToDelete = Array.from(this.processedMentions.values())
-          .slice(0, this.processedMentions.size - AutonomousAgent.MAX_PROCESSED_MENTIONS);
-        entriesToDelete.forEach(id => this.processedMentions.delete(id));
+        const iter = this.processedMentions.values();
+        while (this.processedMentions.size > AutonomousAgent.MAX_PROCESSED_MENTIONS) {
+          const { value, done } = iter.next();
+          if (done) break;
+          this.processedMentions.delete(value);
+        }
       }
     } catch (error) {
       console.error('❌ Error in processing loop:', error);
