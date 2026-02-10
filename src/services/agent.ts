@@ -102,7 +102,11 @@ export class AutonomousAgent {
         const excess = this.processedMentions.size - AutonomousAgent.MAX_PROCESSED_MENTIONS;
         const iter = this.processedMentions.values();
         for (let i = 0; i < excess; i++) {
-          this.processedMentions.delete(iter.next().value as string);
+          const { value, done } = iter.next();
+          if (done) {
+            break;
+          }
+          this.processedMentions.delete(value);
         }
       }
     } catch (error) {
