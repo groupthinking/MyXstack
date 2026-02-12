@@ -19,7 +19,8 @@ def _build_mcp_server_app() -> FastAPI:
     mcp_server = create_mcp()
     mcp_asgi = mcp_server.http_app(path="/", transport="http")
 
-    api = FastAPI(title="myxstack-mcp-server")
+    # FastMCP's HTTP transport requires its lifespan to be wired into the parent ASGI app.
+    api = FastAPI(title="myxstack-mcp-server", lifespan=mcp_asgi.lifespan)
     api.mount("/mcp", mcp_asgi)
 
     @api.get("/")
@@ -75,4 +76,3 @@ elif service in {"x-listener", "mcp-dispatcher"}:
 else:
     # Safe default for unknown service names.
     app = _build_worker_app(service or "unknown")
-
