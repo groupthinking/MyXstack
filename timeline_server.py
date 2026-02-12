@@ -2,12 +2,17 @@ import os
 from typing import Any, Dict, List, Optional
 
 from fastapi import FastAPI, HTTPException
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from a2a_store import add_message, get_agent, list_agents, list_messages, register_agent
 from timeline_store import add_item, delete_item, get_item, list_items, update_item
 
 app = FastAPI(title="xMCP Timeline Service")
+
+
+@app.get("/health")
+def health() -> Dict[str, str]:
+    return {"status": "ok"}
 
 
 class TimelineItemCreate(BaseModel):
@@ -40,6 +45,7 @@ class AgentCreate(BaseModel):
 
 
 class A2AMessageCreate(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
     from_agent: str = Field(alias="from")
     to: str
     type: str = "info"
@@ -63,13 +69,13 @@ def get_item_by_id(item_id: str) -> Dict[str, Any]:
 
 @app.post("/v1/timeline/items")
 def create_item(payload: TimelineItemCreate) -> Dict[str, Any]:
-    item = add_item(payload.dict())
+    item = add_item(payload.model_dump())
     return item
 
 
 @app.patch("/v1/timeline/items/{item_id}")
 def patch_item(item_id: str, updates: TimelineItemUpdate) -> Dict[str, Any]:
-    data = updates.dict(exclude_unset=True)
+    data = updates.model_dump(exclude_unset=True)
     if updates.action and not updates.status:
         data["status"] = updates.action.lower()
     item = update_item(item_id, data)
@@ -104,7 +110,7 @@ def get_agent_by_id(agent_id: str) -> Dict[str, Any]:
 
 @app.post("/v1/a2a/agents")
 def create_agent(payload: AgentCreate) -> Dict[str, Any]:
-    agent = register_agent(payload.dict(exclude_unset=True))
+    agent = register_agent(payload.model_dump(exclude_unset=True))
     return agent
 
 
@@ -116,7 +122,7 @@ def get_agent_messages(agent_id: str) -> Dict[str, Any]:
 
 @app.post("/v1/a2a/messages")
 def create_message(payload: A2AMessageCreate) -> Dict[str, Any]:
-    message = add_message(payload.dict(by_alias=True))
+    message = add_message(payload.model_dump(by_alias=True))
     return message
 
 

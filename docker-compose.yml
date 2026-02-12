@@ -1,0 +1,64 @@
+services:
+  mcp-server:
+    build: .
+    command: python server.py
+    ports:
+      - "8000:8000"
+    env_file: .env
+    environment:
+      - MCP_HOST=0.0.0.0
+      - MCP_PORT=8000
+    restart: unless-stopped
+
+  timeline-server:
+    build: .
+    command: python timeline_server.py
+    ports:
+      - "8080:8080"
+    env_file: .env
+    environment:
+      - TIMELINE_HOST=0.0.0.0
+      - TIMELINE_PORT=8080
+    volumes:
+      - xmcp-data:/root/.xmcp
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+  listener:
+    build: .
+    command: python listener.py
+    env_file: .env
+    environment:
+      - MCP_SERVER_URL=http://mcp-server:8000/mcp
+      - TIMELINE_API_URL=http://timeline-server:8080
+    volumes:
+      - xmcp-data:/root/.xmcp
+    depends_on:
+      timeline-server:
+        condition: service_healthy
+      mcp-server:
+        condition: service_started
+    restart: unless-stopped
+
+  mcp-dispatcher:
+    build: .
+    command: python mcp_dispatcher.py
+    env_file: .env
+    environment:
+      - MCP_SERVER_URL=http://mcp-server:8000/mcp
+      - TIMELINE_API_URL=http://timeline-server:8080
+    volumes:
+      - xmcp-data:/root/.xmcp
+    depends_on:
+      timeline-server:
+        condition: service_healthy
+      mcp-server:
+        condition: service_started
+    restart: unless-stopped
+
+volumes:
+  xmcp-data:
