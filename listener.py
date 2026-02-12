@@ -7,11 +7,14 @@ from typing import Optional
 import requests
 import tweepy
 from dotenv import load_dotenv
+from tweepy.errors import HTTPException as TweepyHTTPException
 from xai_sdk import Client
 from xai_sdk.chat import user
 from xai_sdk.tools import mcp
 
 LAST_SEEN_PATH = Path(os.getenv("XMCP_LAST_SEEN_PATH", "~/.xmcp/last_seen.txt")).expanduser()
+POLL_SECONDS = int(os.getenv("POLL_INTERVAL_SECONDS", "60"))
+PAYMENT_REQUIRED_BACKOFF_SECONDS = int(os.getenv("X_PAYMENT_REQUIRED_BACKOFF_SECONDS", "900"))
 
 
 def load_env() -> None:
@@ -110,11 +113,30 @@ def main() -> None:
             pass
 
     while True:
-        mentions = client.get_users_mentions(
-            id=bot_id,
-            start_time=start_time,
-            tweet_fields=["conversation_id", "created_at", "author_id", "text"],
-        )
+        try:
+            mentions = client.get_users_mentions(
+                id=bot_id,
+                start_time=start_time,
+                tweet_fields=["conversation_id", "created_at", "author_id", "text"],
+            )
+        except TweepyHTTPException as exc:
+            status_code = getattr(getattr(exc, "response", None), "status_code", None)
+            if status_code == 402:
+                # Avoid crash-looping if the X account does not have API credits enabled yet.
+                print(
+                    f"X API returned 402 Payment Required. Backing off for {PAYMENT_REQUIRED_BACKOFF_SECONDS}s.",
+                    flush=True,
+                )
+                time.sleep(PAYMENT_REQUIRED_BACKOFF_SECONDS)
+                continue
+            print(f"X API error fetching mentions: {exc}", flush=True)
+            time.sleep(POLL_SECONDS)
+            continue
+        except Exception as exc:
+            print(f"Unexpected error fetching mentions: {exc}", flush=True)
+            time.sleep(POLL_SECONDS)
+            continue
+
         for mention in mentions.data or []:
             context = mention.text
             prompt = f"""
@@ -125,28 +147,38 @@ You are an autonomous X agent bot. You were mentioned in this thread:
 Analyze the request/intent. Use available tools to respond helpfully.
 Always reply directly to the mentioning post. Be concise and actionable.
 """
-            grok_reply = get_grok_reply(prompt)
+            try:
+                grok_reply = get_grok_reply(prompt)
+            except Exception as exc:
+                print(f"Error getting Grok reply for mention {mention.id}: {exc}", flush=True)
+                grok_reply = "Processing your tag... (error generating full response)"
 
-            client.create_tweet(
-                text=grok_reply[:280],
-                in_reply_to_tweet_id=mention.id,
-            )
+            try:
+                client.create_tweet(
+                    text=grok_reply[:280],
+                    in_reply_to_tweet_id=mention.id,
+                )
+            except Exception as exc:
+                print(f"Error replying to mention {mention.id}: {exc}", flush=True)
 
-            push_timeline_card(
-                title=f"New mention {mention.id}",
-                body=context,
-                metadata={
-                    "mention_id": mention.id,
-                    "author_id": mention.author_id,
-                    "conversation_id": mention.conversation_id,
-                    "reply_preview": grok_reply[:280],
-                },
-            )
+            try:
+                push_timeline_card(
+                    title=f"New mention {mention.id}",
+                    body=context,
+                    metadata={
+                        "mention_id": mention.id,
+                        "author_id": mention.author_id,
+                        "conversation_id": mention.conversation_id,
+                        "reply_preview": grok_reply[:280],
+                    },
+                )
+            except Exception as exc:
+                print(f"Error pushing timeline card for mention {mention.id}: {exc}", flush=True)
 
             start_time = mention.created_at or datetime.now(timezone.utc)
             save_last_seen(start_time.isoformat())
 
-        time.sleep(60)
+        time.sleep(POLL_SECONDS)
 
 
 if __name__ == "__main__":
