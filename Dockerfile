@@ -11,4 +11,4 @@ COPY *.py .
 COPY openapi.json .
 
 # Default command (overridden per service in docker-compose)
-CMD ["python", "server.py"]
+CMD ["sh", "-lc", "uvicorn main:app --host 0.0.0.0 --port ${PORT:-8000}"]
