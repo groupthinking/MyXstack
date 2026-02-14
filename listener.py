@@ -16,6 +16,7 @@ LAST_SEEN_PATH = Path(os.getenv("XMCP_LAST_SEEN_PATH", "~/.xmcp/last_seen.txt"))
 POLL_SECONDS = int(os.getenv("POLL_INTERVAL_SECONDS", "60"))
 PAYMENT_REQUIRED_BACKOFF_SECONDS = int(os.getenv("X_PAYMENT_REQUIRED_BACKOFF_SECONDS", "900"))
 
+PROCESSED_MENTIONS_PATH = Path(os.getenv("XMCP_PROCESSED_MENTIONS_PATH", "~/.xmcp/processed_mentions.txt")).expanduser()
 
 def load_env() -> None:
     env_path = Path(__file__).resolve().parent / ".env"
@@ -32,6 +33,19 @@ def load_last_seen() -> Optional[str]:
     if not LAST_SEEN_PATH.exists():
         return None
     return LAST_SEEN_PATH.read_text(encoding="utf-8").strip() or None
+
+
+def load_processed_mentions() -> set[str]:
+    if not PROCESSED_MENTIONS_PATH.exists():
+        return set()
+    with PROCESSED_MENTIONS_PATH.open("r", encoding="utf-8") as f:
+        return {line.strip() for line in f if line.strip()}
+
+
+def save_processed_mention(mention_id: str) -> None:
+    PROCESSED_MENTIONS_PATH.parent.mkdir(parents=True, exist_ok=True)
+    with PROCESSED_MENTIONS_PATH.open("a", encoding="utf-8") as f:
+        f.write(f"{mention_id}\n")
 
 
 def build_client() -> tweepy.Client:
@@ -69,7 +83,7 @@ def get_grok_reply(prompt: str) -> str:
 
 
 def push_timeline_card(title: str, body: str, metadata: dict) -> None:
-    timeline_url = os.getenv("TIMELINE_API_URL", "http://127.0.0.1:8080")
+    timeline_url = os.getenv("TIMELINE_API_URL", "http://127.0.0.1:8000")
     user_id = os.getenv("TIMELINE_USER_ID", "default")
     payload = {
         "user_id": user_id,
@@ -83,7 +97,7 @@ def push_timeline_card(title: str, body: str, metadata: dict) -> None:
 
 
 def ensure_agent_registered() -> None:
-    timeline_url = os.getenv("TIMELINE_API_URL", "http://127.0.0.1:8080")
+    timeline_url = os.getenv("TIMELINE_API_URL", "http://127.0.0.1:8000")
     payload = {
         "id": "x-agent",
         "name": "X Agent",
@@ -112,6 +126,8 @@ def main() -> None:
         except ValueError:
             pass
 
+    processed_mentions = load_processed_mentions()
+
     while True:
         try:
             mentions = client.get_users_mentions(
@@ -122,7 +138,6 @@ def main() -> None:
         except TweepyHTTPException as exc:
             status_code = getattr(getattr(exc, "response", None), "status_code", None)
             if status_code == 402:
-                # Avoid crash-looping if the X account does not have API credits enabled yet.
                 print(
                     f"X API returned 402 Payment Required. Backing off for {PAYMENT_REQUIRED_BACKOFF_SECONDS}s.",
                     flush=True,
@@ -138,6 +153,11 @@ def main() -> None:
             continue
 
         for mention in mentions.data or []:
+            mention_id_str = str(mention.id)
+            if mention_id_str in processed_mentions:
+                print(f"Skipping already processed mention {mention.id}", flush=True)
+                continue
+
             context = mention.text
             prompt = f"""
 You are an autonomous X agent bot. You were mentioned in this thread:
@@ -151,13 +171,15 @@ Always reply directly to the mentioning post. Be concise and actionable.
                 grok_reply = get_grok_reply(prompt)
             except Exception as exc:
                 print(f"Error getting Grok reply for mention {mention.id}: {exc}", flush=True)
-                grok_reply = "Processing your tag... (error generating full response)"
+                grok_reply = "Sorry, I'm having trouble processing that. Try again or DM me."
 
             try:
                 client.create_tweet(
                     text=grok_reply[:280],
                     in_reply_to_tweet_id=mention.id,
                 )
+                processed_mentions.add(mention_id_str)
+                save_processed_mention(mention_id_str)
             except Exception as exc:
                 print(f"Error replying to mention {mention.id}: {exc}", flush=True)
 
