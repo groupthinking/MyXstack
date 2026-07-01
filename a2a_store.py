@@ -89,8 +89,9 @@ def register_agent(payload: Dict[str, Any]) -> Dict[str, Any]:
         "status": payload.get("status", "offline"),
         "endpoint": payload.get("endpoint", ""),
         # Classification: "agent" (interactive, LLM-backed, autonomous) vs
-        # "bot" (deterministic function executor).
-        "kind": payload.get("kind", "agent"),
+        # "bot" (deterministic function executor). Normalized so null or
+        # unknown values can never enter the registry.
+        "kind": payload.get("kind") if payload.get("kind") in ("agent", "bot") else "agent",
         "tags": payload.get("tags", []),
         "created_at": _utc_now(),
     }

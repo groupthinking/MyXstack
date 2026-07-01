@@ -41,8 +41,9 @@ class AgentCreate(BaseModel):
     description: Optional[str] = ""
     status: Optional[str] = "offline"
     endpoint: Optional[str] = ""
-    # "agent" (interactive, LLM-backed) or "bot" (deterministic executor)
-    kind: Optional[Literal["agent", "bot"]] = "agent"
+    # "agent" (interactive, LLM-backed) or "bot" (deterministic executor).
+    # Not Optional: an explicit null must be rejected, not persisted.
+    kind: Literal["agent", "bot"] = "agent"
     tags: List[str] = Field(default_factory=list)
 
 

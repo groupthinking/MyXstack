@@ -58,7 +58,10 @@ def push_timeline_card(card: dict, posted_by: str) -> None:
         "actions": card.get("actions", []),
         "metadata": card.get("metadata", {}),
     }
-    requests.post(f"{timeline_url}/v1/timeline/items", json=payload, timeout=10)
+    response = requests.post(f"{timeline_url}/v1/timeline/items", json=payload, timeout=10)
+    # Surface 4xx/5xx as failures so the caller holds the watermark and
+    # retries — a lost card would silently defeat the approval gate.
+    response.raise_for_status()
 
 
 def process_mention(client: tweepy.Client, mention) -> bool:

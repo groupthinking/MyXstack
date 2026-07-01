@@ -89,7 +89,7 @@ def truncate_for_reply(
     """Shorten LLM output to fit an X reply, pointing at the timeline card."""
     if len(text) <= limit:
         return text
-    return text[:240].rsplit(" ", 1)[0] + suffix
+    return text[: max(0, limit - 30)].rsplit(" ", 1)[0] + suffix
 
 
 def grok_chat(prompt: str) -> str:
