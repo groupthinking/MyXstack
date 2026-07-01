@@ -91,7 +91,27 @@ def process_mention(client: tweepy.Client, mention) -> bool:
             f"Error from agent {member.profile.id} for mention {mention.id}: {exc}",
             flush=True,
         )
-        return True
+        # Dead-letter: surface the failure on the timeline so the mention
+        # isn't silently dropped, without poison-pilling the poll loop.
+        # Only if even the dead-letter card can't land do we hold the
+        # watermark and retry the mention next poll.
+        try:
+            push_timeline_card(
+                {
+                    "title": f"Agent error on mention {mention.id}",
+                    "body": f"{member.profile.id} failed: {exc}\n\nMention:\n{mention.text}",
+                    "actions": [],
+                    "metadata": {
+                        "agent_id": member.profile.id,
+                        "mention_id": mention.id,
+                        "error": str(exc),
+                    },
+                },
+                posted_by=member.profile.id,
+            )
+            return True
+        except Exception:
+            return False
 
     if reply.card:
         try:
@@ -155,7 +175,10 @@ def main() -> None:
             time.sleep(POLL_SECONDS)
             continue
 
-        for mention in mentions.data or []:
+        # The X API returns mentions newest-first; process oldest-first so
+        # the last-seen watermark only ever moves forward.
+        epoch = datetime(1970, 1, 1, tzinfo=timezone.utc)
+        for mention in sorted(mentions.data or [], key=lambda m: m.created_at or epoch):
             if not process_mention(client, mention):
                 # Card push failed: stop here so this mention (and later
                 # ones) are retried on the next poll.

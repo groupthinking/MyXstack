@@ -154,13 +154,23 @@ def main() -> None:
                 last_seen = created_at or datetime.now(timezone.utc)
                 save_last_seen(last_seen.isoformat())
                 continue
-            if item and action:
-                owner = find_member(item_meta.get("agent_id"))
+            owned_agent_id = item_meta.get("agent_id")
+            if item and action and owned_agent_id:
+                owner = find_member(owned_agent_id)
                 if owner:
                     try:
                         result = owner.execute_action(item, action)
                     except Exception as exc:
                         result = f"Agent {owner.profile.id} failed to execute '{action}': {exc}"
+                # Fail closed: a card owned by a member must never fall
+                # through to the generic Grok executor, or the member's
+                # safety policy (paper-only trades, intent-only purchases)
+                # would be bypassed.
+                if result is None:
+                    result = (
+                        f"Action '{action}' not handled by agent {owned_agent_id}; "
+                        "nothing executed (owned cards never use the generic fallback)."
+                    )
 
             # Fallback: legacy generic Grok execution.
             if result is None:

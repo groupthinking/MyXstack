@@ -94,7 +94,9 @@ class PaperBroker:
 
     def positions(self) -> Dict[str, float]:
         totals: Dict[str, float] = {}
-        with _LEDGER_LOCK:
+        # Same locks as execute(): _read()'s corrupt-ledger recovery renames
+        # the file, which must not race a writer in another process.
+        with _LEDGER_LOCK, _ledger_file_lock(self.ledger_path):
             fills = self._read()
         for fill in fills:
             sign = 1 if fill.get("side") == "buy" else -1
