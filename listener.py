@@ -61,6 +61,55 @@ def push_timeline_card(card: dict, posted_by: str) -> None:
     requests.post(f"{timeline_url}/v1/timeline/items", json=payload, timeout=10)
 
 
+def process_mention(client: tweepy.Client, mention) -> bool:
+    """Route one mention to its team member and deliver the results.
+
+    Returns False when the approval card could not be pushed — the caller
+    must then NOT advance the last-seen watermark, so the mention is
+    retried next poll instead of its approval-gated proposal being lost.
+    The card is pushed before the X reply for the same reason: the card is
+    the safety-critical artifact.
+    """
+    context = MentionContext(
+        text=mention.text,
+        mention_id=mention.id,
+        author_id=mention.author_id,
+        conversation_id=mention.conversation_id,
+    )
+    member = route_mention(context)
+    print(
+        f"Mention {mention.id} routed to {member.profile.id} ({member.profile.kind})",
+        flush=True,
+    )
+    try:
+        reply = member.handle_mention(context)
+    except Exception as exc:
+        print(
+            f"Error from agent {member.profile.id} for mention {mention.id}: {exc}",
+            flush=True,
+        )
+        return True
+
+    if reply.card:
+        try:
+            push_timeline_card(reply.card, posted_by=member.profile.id)
+        except Exception as exc:
+            print(
+                f"Error pushing timeline card for mention {mention.id}: {exc}; will retry",
+                flush=True,
+            )
+            return False
+
+    try:
+        client.create_tweet(
+            text=reply.text[:280],
+            in_reply_to_tweet_id=mention.id,
+        )
+    except Exception as exc:
+        print(f"Error replying to mention {mention.id}: {exc}", flush=True)
+    return True
+
+
 def main() -> None:
     load_env()
     client = build_client()
@@ -104,44 +153,10 @@ def main() -> None:
             continue
 
         for mention in mentions.data or []:
-            context = MentionContext(
-                text=mention.text,
-                mention_id=mention.id,
-                author_id=mention.author_id,
-                conversation_id=mention.conversation_id,
-            )
-            member = route_mention(context)
-            print(
-                f"Mention {mention.id} routed to {member.profile.id} ({member.profile.kind})",
-                flush=True,
-            )
-            try:
-                reply = member.handle_mention(context)
-            except Exception as exc:
-                print(
-                    f"Error from agent {member.profile.id} for mention {mention.id}: {exc}",
-                    flush=True,
-                )
-                reply = None
-
-            if reply:
-                try:
-                    client.create_tweet(
-                        text=reply.text[:280],
-                        in_reply_to_tweet_id=mention.id,
-                    )
-                except Exception as exc:
-                    print(f"Error replying to mention {mention.id}: {exc}", flush=True)
-
-                if reply.card:
-                    try:
-                        push_timeline_card(reply.card, posted_by=member.profile.id)
-                    except Exception as exc:
-                        print(
-                            f"Error pushing timeline card for mention {mention.id}: {exc}",
-                            flush=True,
-                        )
-
+            if not process_mention(client, mention):
+                # Card push failed: stop here so this mention (and later
+                # ones) are retried on the next poll.
+                break
             start_time = mention.created_at or datetime.now(timezone.utc)
             save_last_seen(start_time.isoformat())
 

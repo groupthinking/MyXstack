@@ -38,6 +38,14 @@ def test_team_classification():
     assert kinds["tickerbot"] == "bot"
 
 
+def test_multi_handle_routes_to_earliest_tag():
+    team = build_team()
+    member = find_target("@Research @Tradedesk what about $TSLA?", team)
+    assert member.profile.id == "research"
+    member = find_target("@Tradedesk @Research what about $TSLA?", team)
+    assert member.profile.id == "tradedesk"
+
+
 def test_find_member():
     assert find_member("tradedesk").profile.name == "Trade Desk"
     assert find_member("nope") is None

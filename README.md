@@ -19,7 +19,7 @@ Four services working together:
 
 Mentions are routed to a **team of @handle-addressable members** (see [docs/AGENTS.md](docs/AGENTS.md)):
 
-```
+```text
 @MyXstack @Tradedesk $TSLA buy 100     → approval-gated trade proposal (paper broker)
 @MyXstack @Research why is $NVDA down? → Grok research brief on the timeline
 @MyXstack @Shopping shoes under $150   → product picks, purchase approval-gated

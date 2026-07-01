@@ -69,6 +69,8 @@ class TradeDeskAgent(TeamMember):
         summary = f"{trade['side'].upper()} {trade['quantity']:g} ${trade['ticker']}"
         context = ""
         if os.getenv("TRADEDESK_USE_GROK", "1") == "1":
+            # Only the parsed, validated ticker/side reach the prompt — the
+            # raw mention text never does.
             context = grok_chat(
                 f"In under 80 words, give current market context for ${trade['ticker']} "
                 f"relevant to a proposed {trade['side']} order. Facts only, no advice."
@@ -106,13 +108,24 @@ class TradeDeskAgent(TeamMember):
         # coerce before trusting types.
         ticker = str(metadata.get("ticker", "?")).upper()
         side = str(metadata.get("side", "buy")).lower()
+        if side not in ("buy", "sell"):
+            return f"⚠️ Invalid side '{side}' on trade card {item.get('id', '?')}; nothing executed."
         try:
             quantity = float(metadata.get("quantity", 1))
         except (TypeError, ValueError):
             return f"⚠️ Invalid quantity on trade card {item.get('id', '?')}; nothing executed."
+        if quantity <= 0:
+            return f"⚠️ Invalid quantity {quantity:g} on trade card {item.get('id', '?')}; nothing executed."
         summary = f"{side.upper()} {quantity:g} ${ticker}"
         if action.lower() == "approve":
-            fill = self.broker.execute(ticker=ticker, side=side, quantity=quantity)
+            # The card id keys the fill, so a replayed/double-clicked
+            # approval can never book a second fill for the same proposal.
+            key = item.get("id") or (
+                f"mention-{metadata['mention_id']}" if metadata.get("mention_id") else None
+            )
+            fill = self.broker.execute(ticker=ticker, side=side, quantity=quantity, key=key)
+            if fill.get("duplicate"):
+                return f"↩️ {summary} was already executed (fill {fill['id'][:8]}); duplicate approval ignored."
             return f"✅ Executed {summary} on {fill['venue']} venue (fill {fill['id'][:8]})."
         if action.lower() == "reject":
             return f"🚫 Trade proposal {summary} cancelled. No order placed."

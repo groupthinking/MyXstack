@@ -96,8 +96,14 @@ def register_agent(payload: Dict[str, Any]) -> Dict[str, Any]:
     }
     with A2A_STORE_LOCK:
         data = _read_store()
-        if any(existing.get("id") == agent["id"] for existing in data["agents"]):
-            return agent
+        for existing in data["agents"]:
+            if existing.get("id") == agent["id"]:
+                # Re-registration updates mutable fields so seeded records
+                # (e.g. x-agent without kind) don't stay stale forever.
+                for field in ("name", "description", "status", "endpoint", "kind", "tags"):
+                    existing[field] = agent[field]
+                _write_store(data)
+                return existing
         data["agents"].append(agent)
         _write_store(data)
     return agent

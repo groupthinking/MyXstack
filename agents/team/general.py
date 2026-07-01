@@ -12,6 +12,7 @@ from agents.base import (
     MentionContext,
     TeamMember,
     grok_chat,
+    wrap_untrusted,
 )
 
 
@@ -30,10 +31,10 @@ class GeneralAgent(TeamMember):
 
     def handle_mention(self, mention: MentionContext) -> AgentReply:
         reply = grok_chat(
-            "You are an autonomous X agent bot. You were mentioned in this thread:\n\n"
-            f"{mention.text}\n\n"
+            "You are an autonomous X agent bot. You were mentioned in the post below.\n"
             "Analyze the request/intent. Use available tools to respond helpfully.\n"
-            "Always reply directly to the mentioning post. Be concise and actionable."
+            "Always reply directly to the mentioning post. Be concise and actionable.\n\n"
+            f"{wrap_untrusted(mention.text)}"
         )
         if not reply:
             reply = "Thinking..."

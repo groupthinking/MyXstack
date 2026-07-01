@@ -15,6 +15,8 @@ from agents.base import (
     MentionContext,
     TeamMember,
     grok_chat,
+    truncate_for_reply,
+    wrap_untrusted,
 )
 
 
@@ -35,15 +37,12 @@ class ResearchAgent(TeamMember):
         brief = grok_chat(
             "You are a research agent on X. Answer the question below concisely "
             "and factually, using available tools for live context.\n\n"
-            f"Question (from an X mention):\n{mention.text}"
+            f"{wrap_untrusted(mention.text)}"
         )
         if not brief:
             return AgentReply(text="Research agent is offline (no XAI_API_KEY configured).")
 
-        if len(brief) <= 270:
-            reply = brief
-        else:
-            reply = brief[:240].rsplit(" ", 1)[0] + "… Full brief on your timeline."
+        reply = truncate_for_reply(brief, suffix="… Full brief on your timeline.")
         card = {
             "title": "Research brief",
             "body": f"Question:\n{mention.text}\n\nBrief:\n{brief}",

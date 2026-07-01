@@ -143,8 +143,19 @@ def main() -> None:
             # execute the action (e.g. Tradedesk fills an approved trade).
             result = None
             item = get_timeline_item(item_id) if item_id else None
+            item_meta = (item.get("metadata") or {}) if item else {}
+            if item and action and item_meta.get("processed_action") == action:
+                # Replay guard: a crash between execute and save_last_seen
+                # re-delivers the message; don't run the side effect twice.
+                print(
+                    f"Skipping already-processed '{action}' on item {item_id}",
+                    flush=True,
+                )
+                last_seen = created_at or datetime.now(timezone.utc)
+                save_last_seen(last_seen.isoformat())
+                continue
             if item and action:
-                owner = find_member((item.get("metadata") or {}).get("agent_id"))
+                owner = find_member(item_meta.get("agent_id"))
                 if owner:
                     try:
                         result = owner.execute_action(item, action)
@@ -160,7 +171,9 @@ Use MCP tools to execute any required external steps. Return a concise status up
                 result = call_grok(prompt)
 
             if item_id:
-                update_timeline_item(item_id, {"mcp_result": result})
+                update_timeline_item(
+                    item_id, {"mcp_result": result, "processed_action": action}
+                )
 
             send_message(
                 from_agent=agent_id,

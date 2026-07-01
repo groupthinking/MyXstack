@@ -4,7 +4,7 @@ MyXstack runs a **team of @handle-addressable members** on top of the A2A
 (agent-to-agent) layer. Tag a member in any mention and the listener routes
 the request to it:
 
-```
+```text
 @MyXstack @Tradedesk $TSLA buy 100
 @MyXstack @Research what's driving the $NVDA selloff?
 @MyXstack @Shopping find trail running shoes under $150
@@ -36,7 +36,7 @@ Handles are configurable via `TRADEDESK_HANDLE`, `RESEARCH_HANDLE`,
 
 ## How a request flows
 
-```
+```text
 X mention "@Tradedesk $TSLA buy 100"
    │
    ▼

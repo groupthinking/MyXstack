@@ -28,6 +28,7 @@ logs:
 	@tail -f /tmp/xmcp-*.log 2>/dev/null || echo "No log files found."
 
 test:
+	@test -d .venv || python3 -m venv .venv
 	. .venv/bin/activate && pip install -q -r requirements-dev.txt && pytest tests/ -v
 
 # ─── Docker ─────────────────────────────────

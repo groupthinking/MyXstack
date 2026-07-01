@@ -1,6 +1,8 @@
 """Team roster, @handle routing, and A2A registration."""
 
 import os
+import threading
+import time
 from typing import List, Optional
 
 import requests
@@ -21,18 +23,26 @@ def build_team() -> List[TeamMember]:
 
 
 _TEAM: Optional[List[TeamMember]] = None
+_TEAM_LOCK = threading.Lock()
 
 
 def get_team() -> List[TeamMember]:
     global _TEAM
     if _TEAM is None:
-        _TEAM = build_team()
+        with _TEAM_LOCK:
+            if _TEAM is None:
+                _TEAM = build_team()
     return _TEAM
 
 
 def route_mention(mention: MentionContext) -> TeamMember:
+    """Route to the earliest-tagged member; fall back to the member with an
+    empty handle (the general agent), regardless of roster order."""
     team = get_team()
-    return find_target(mention.text, team) or team[-1]
+    target = find_target(mention.text, team)
+    if target:
+        return target
+    return next(m for m in team if not m.profile.handle)
 
 
 def find_member(agent_id: Optional[str]) -> Optional[TeamMember]:
@@ -58,7 +68,14 @@ def register_team() -> None:
             "kind": profile.kind,
             "tags": profile.tags,
         }
-        try:
-            requests.post(f"{timeline_url}/v1/a2a/agents", json=payload, timeout=10)
-        except requests.RequestException as exc:
-            print(f"Could not register agent {profile.id}: {exc}", flush=True)
+        # The timeline server may still be booting (compose/k8s startup
+        # order is not guaranteed), so retry with backoff before giving up.
+        for attempt in range(3):
+            try:
+                requests.post(f"{timeline_url}/v1/a2a/agents", json=payload, timeout=10)
+                break
+            except requests.RequestException as exc:
+                if attempt == 2:
+                    print(f"Could not register agent {profile.id}: {exc}", flush=True)
+                else:
+                    time.sleep(2**attempt)

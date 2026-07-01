@@ -69,6 +69,42 @@ def test_approve_executes_paper_trade(tmp_path):
     assert broker.positions() == {"TSLA": 10.0}
 
 
+def test_double_approval_does_not_double_fill(tmp_path):
+    broker = PaperBroker(str(tmp_path / "trades.json"))
+    agent = TradeDeskAgent(broker=broker)
+    item = {
+        "id": "item-1",
+        "metadata": {
+            "agent_id": "tradedesk",
+            "action_type": "trade",
+            "ticker": "TSLA",
+            "side": "buy",
+            "quantity": 10,
+        },
+    }
+    first = agent.execute_action(item, "Approve")
+    second = agent.execute_action(item, "Approve")
+    assert "Executed" in first
+    assert "duplicate approval ignored" in second
+    assert broker.positions() == {"TSLA": 10.0}
+
+
+def test_invalid_side_and_quantity_rejected(tmp_path):
+    broker = PaperBroker(str(tmp_path / "trades.json"))
+    agent = TradeDeskAgent(broker=broker)
+    bad_side = {
+        "id": "i1",
+        "metadata": {"action_type": "trade", "ticker": "TSLA", "side": "yolo", "quantity": 1},
+    }
+    bad_qty = {
+        "id": "i2",
+        "metadata": {"action_type": "trade", "ticker": "TSLA", "side": "buy", "quantity": -5},
+    }
+    assert "Invalid side" in agent.execute_action(bad_side, "Approve")
+    assert "Invalid quantity" in agent.execute_action(bad_qty, "Approve")
+    assert broker.positions() == {}
+
+
 def test_reject_places_no_order(tmp_path):
     broker = PaperBroker(str(tmp_path / "trades.json"))
     agent = TradeDeskAgent(broker=broker)

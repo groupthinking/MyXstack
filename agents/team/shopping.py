@@ -18,6 +18,8 @@ from agents.base import (
     MentionContext,
     TeamMember,
     grok_chat,
+    truncate_for_reply,
+    wrap_untrusted,
 )
 
 _BUDGET = re.compile(r"under\s+\$(?P<budget>\d+(?:\.\d+)?)", re.IGNORECASE)
@@ -43,7 +45,7 @@ class ShoppingAgent(TeamMember):
             "You are a shopping assistant. From the request below, suggest up to 3 "
             f"specific products{budget}, one line each with an approximate price. "
             "Facts only.\n\n"
-            f"Request (from an X mention):\n{mention.text}"
+            f"{wrap_untrusted(mention.text)}"
         )
         if not picks:
             return AgentReply(text="Shopping agent is offline (no XAI_API_KEY configured).")
@@ -59,7 +61,7 @@ class ShoppingAgent(TeamMember):
                 "author_id": mention.author_id,
             },
         }
-        reply = picks if len(picks) <= 270 else picks[:240].rsplit(" ", 1)[0] + "… Full list on your timeline."
+        reply = truncate_for_reply(picks, suffix="… Full list on your timeline.")
         return AgentReply(text=reply, card=card)
 
     def execute_action(self, item: Dict[str, Any], action: str) -> Optional[str]:
