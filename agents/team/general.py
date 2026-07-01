@@ -5,6 +5,8 @@ with MCP tools and reply with whatever it produces, logging a card with
 Approve/Reject/Snooze follow-up actions.
 """
 
+from typing import Any, Dict, Optional
+
 from agents.base import (
     KIND_AGENT,
     AgentProfile,
@@ -51,3 +53,18 @@ class GeneralAgent(TeamMember):
             },
         }
         return AgentReply(text=reply, card=card)
+
+    def execute_action(self, item: Dict[str, Any], action: str) -> Optional[str]:
+        """Run the legacy generic Grok workflow for this agent's own cards.
+
+        The dispatcher fails closed for member-owned cards, so the general
+        agent must handle its Approve/Reject/Snooze actions itself — this
+        is the same behavior the pre-team dispatcher fallback provided."""
+        result = grok_chat(
+            f"You are a workflow agent. A user took the action '{action}' on "
+            f"timeline item {item.get('id', '?')} titled "
+            f"'{item.get('title', '')}'.\n"
+            "Use MCP tools to execute any required external steps. "
+            "Return a concise status update."
+        )
+        return result or f"Acknowledged '{action}' (no executor output)."
