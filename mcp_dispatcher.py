@@ -34,10 +34,14 @@ def load_last_seen() -> Optional[str]:
 
 def get_timeline_item(item_id: str) -> Optional[Dict]:
     timeline_url = os.getenv("TIMELINE_API_URL", "http://127.0.0.1:8080")
-    response = requests.get(f"{timeline_url}/v1/timeline/items/{item_id}", timeout=10)
-    if response.status_code != 200:
+    try:
+        response = requests.get(f"{timeline_url}/v1/timeline/items/{item_id}", timeout=10)
+        if response.status_code != 200:
+            return None
+        return response.json()
+    except (requests.RequestException, ValueError) as exc:
+        print(f"Could not fetch timeline item {item_id}: {exc}", flush=True)
         return None
-    return response.json()
 
 
 def get_messages(agent_id: str) -> list[Dict]:

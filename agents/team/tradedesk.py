@@ -102,16 +102,17 @@ class TradeDeskAgent(TeamMember):
         metadata = item.get("metadata") or {}
         if metadata.get("action_type") != "trade":
             return None
-        summary = (
-            f"{str(metadata.get('side', '')).upper()} "
-            f"{metadata.get('quantity', 0):g} ${metadata.get('ticker', '?')}"
-        )
+        # Card metadata round-trips through JSON and external stores, so
+        # coerce before trusting types.
+        ticker = str(metadata.get("ticker", "?")).upper()
+        side = str(metadata.get("side", "buy")).lower()
+        try:
+            quantity = float(metadata.get("quantity", 1))
+        except (TypeError, ValueError):
+            return f"⚠️ Invalid quantity on trade card {item.get('id', '?')}; nothing executed."
+        summary = f"{side.upper()} {quantity:g} ${ticker}"
         if action.lower() == "approve":
-            fill = self.broker.execute(
-                ticker=metadata.get("ticker", "?"),
-                side=metadata.get("side", "buy"),
-                quantity=float(metadata.get("quantity", 1)),
-            )
+            fill = self.broker.execute(ticker=ticker, side=side, quantity=quantity)
             return f"✅ Executed {summary} on {fill['venue']} venue (fill {fill['id'][:8]})."
         if action.lower() == "reject":
             return f"🚫 Trade proposal {summary} cancelled. No order placed."
