@@ -8,9 +8,9 @@ import requests
 import tweepy
 from dotenv import load_dotenv
 from tweepy.errors import HTTPException as TweepyHTTPException
-from xai_sdk import Client
-from xai_sdk.chat import user
-from xai_sdk.tools import mcp
+
+from agents.base import MentionContext
+from agents.registry import register_team, route_mention
 
 LAST_SEEN_PATH = Path(os.getenv("XMCP_LAST_SEEN_PATH", "~/.xmcp/last_seen.txt")).expanduser()
 POLL_SECONDS = int(os.getenv("POLL_INTERVAL_SECONDS", "60"))
@@ -47,52 +47,18 @@ def build_client() -> tweepy.Client:
     )
 
 
-def get_grok_reply(prompt: str) -> str:
-    api_key = os.getenv("XAI_API_KEY", "").strip()
-    if not api_key:
-        return "Missing XAI_API_KEY."
-    model = os.getenv("XAI_MODEL", "grok-4-1-fast")
-    server_url = os.getenv("MCP_SERVER_URL", "http://127.0.0.1:8000/mcp")
-
-    client = Client(api_key=api_key)
-    chat = client.chat.create(
-        model=model,
-        tools=[mcp(server_url=server_url)],
-    )
-    chat.append(user(prompt))
-
-    response_text = ""
-    for _, chunk in chat.stream():
-        if chunk.content:
-            response_text += chunk.content
-    return response_text.strip() or "Thinking..."
-
-
-def push_timeline_card(title: str, body: str, metadata: dict) -> None:
+def push_timeline_card(card: dict, posted_by: str) -> None:
     timeline_url = os.getenv("TIMELINE_API_URL", "http://127.0.0.1:8080")
     user_id = os.getenv("TIMELINE_USER_ID", "default")
     payload = {
         "user_id": user_id,
-        "title": title,
-        "body": body,
-        "posted_by": "x-agent",
-        "actions": ["Approve", "Reject", "Snooze"],
-        "metadata": metadata,
+        "title": card.get("title", "Untitled"),
+        "body": card.get("body", ""),
+        "posted_by": posted_by,
+        "actions": card.get("actions", []),
+        "metadata": card.get("metadata", {}),
     }
     requests.post(f"{timeline_url}/v1/timeline/items", json=payload, timeout=10)
-
-
-def ensure_agent_registered() -> None:
-    timeline_url = os.getenv("TIMELINE_API_URL", "http://127.0.0.1:8080")
-    payload = {
-        "id": "x-agent",
-        "name": "X Agent",
-        "description": "Handles @mentions and X actions.",
-        "status": "online",
-        "endpoint": "x",
-        "tags": ["x", "social"],
-    }
-    requests.post(f"{timeline_url}/v1/a2a/agents", json=payload, timeout=10)
 
 
 def main() -> None:
@@ -102,7 +68,7 @@ def main() -> None:
     if not me:
         raise RuntimeError("Could not resolve authenticated X user for listener")
     bot_id = me.id
-    ensure_agent_registered()
+    register_team()
 
     last_seen = load_last_seen()
     start_time = datetime.now(timezone.utc) - timedelta(minutes=10)
@@ -138,42 +104,43 @@ def main() -> None:
             continue
 
         for mention in mentions.data or []:
-            context = mention.text
-            prompt = f"""
-You are an autonomous X agent bot. You were mentioned in this thread:
-
-{context}
-
-Analyze the request/intent. Use available tools to respond helpfully.
-Always reply directly to the mentioning post. Be concise and actionable.
-"""
+            context = MentionContext(
+                text=mention.text,
+                mention_id=mention.id,
+                author_id=mention.author_id,
+                conversation_id=mention.conversation_id,
+            )
+            member = route_mention(context)
+            print(
+                f"Mention {mention.id} routed to {member.profile.id} ({member.profile.kind})",
+                flush=True,
+            )
             try:
-                grok_reply = get_grok_reply(prompt)
+                reply = member.handle_mention(context)
             except Exception as exc:
-                print(f"Error getting Grok reply for mention {mention.id}: {exc}", flush=True)
-                grok_reply = "Processing your tag... (error generating full response)"
-
-            try:
-                client.create_tweet(
-                    text=grok_reply[:280],
-                    in_reply_to_tweet_id=mention.id,
+                print(
+                    f"Error from agent {member.profile.id} for mention {mention.id}: {exc}",
+                    flush=True,
                 )
-            except Exception as exc:
-                print(f"Error replying to mention {mention.id}: {exc}", flush=True)
+                reply = None
 
-            try:
-                push_timeline_card(
-                    title=f"New mention {mention.id}",
-                    body=context,
-                    metadata={
-                        "mention_id": mention.id,
-                        "author_id": mention.author_id,
-                        "conversation_id": mention.conversation_id,
-                        "reply_preview": grok_reply[:280],
-                    },
-                )
-            except Exception as exc:
-                print(f"Error pushing timeline card for mention {mention.id}: {exc}", flush=True)
+            if reply:
+                try:
+                    client.create_tweet(
+                        text=reply.text[:280],
+                        in_reply_to_tweet_id=mention.id,
+                    )
+                except Exception as exc:
+                    print(f"Error replying to mention {mention.id}: {exc}", flush=True)
+
+                if reply.card:
+                    try:
+                        push_timeline_card(reply.card, posted_by=member.profile.id)
+                    except Exception as exc:
+                        print(
+                            f"Error pushing timeline card for mention {mention.id}: {exc}",
+                            flush=True,
+                        )
 
             start_time = mention.created_at or datetime.now(timezone.utc)
             save_last_seen(start_time.isoformat())

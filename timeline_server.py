@@ -41,6 +41,7 @@ class AgentCreate(BaseModel):
     description: Optional[str] = ""
     status: Optional[str] = "offline"
     endpoint: Optional[str] = ""
+    kind: Optional[str] = "agent"  # "agent" (interactive) or "bot" (deterministic)
     tags: List[str] = Field(default_factory=list)
 
 

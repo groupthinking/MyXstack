@@ -10,6 +10,8 @@ from xai_sdk import Client
 from xai_sdk.chat import user
 from xai_sdk.tools import mcp
 
+from agents.registry import find_member
+
 LAST_SEEN_PATH = Path(os.getenv("XMCP_DISPATCH_LAST_SEEN", "~/.xmcp/dispatch_last_seen.txt")).expanduser()
 
 
@@ -28,6 +30,14 @@ def load_last_seen() -> Optional[str]:
     if not LAST_SEEN_PATH.exists():
         return None
     return LAST_SEEN_PATH.read_text(encoding="utf-8").strip() or None
+
+
+def get_timeline_item(item_id: str) -> Optional[Dict]:
+    timeline_url = os.getenv("TIMELINE_API_URL", "http://127.0.0.1:8080")
+    response = requests.get(f"{timeline_url}/v1/timeline/items/{item_id}", timeout=10)
+    if response.status_code != 200:
+        return None
+    return response.json()
 
 
 def get_messages(agent_id: str) -> list[Dict]:
@@ -125,11 +135,25 @@ def main() -> None:
             item_id = metadata.get("timeline_item_id")
             action = metadata.get("action")
 
-            prompt = f"""
+            # Structured path: if the card belongs to a team member, let it
+            # execute the action (e.g. Tradedesk fills an approved trade).
+            result = None
+            item = get_timeline_item(item_id) if item_id else None
+            if item and action:
+                owner = find_member((item.get("metadata") or {}).get("agent_id"))
+                if owner:
+                    try:
+                        result = owner.execute_action(item, action)
+                    except Exception as exc:
+                        result = f"Agent {owner.profile.id} failed to execute '{action}': {exc}"
+
+            # Fallback: legacy generic Grok execution.
+            if result is None:
+                prompt = f"""
 You are a workflow agent. A user took the action '{action}' on timeline item {item_id}.
 Use MCP tools to execute any required external steps. Return a concise status update.
 """
-            result = call_grok(prompt)
+                result = call_grok(prompt)
 
             if item_id:
                 update_timeline_item(item_id, {"mcp_result": result})

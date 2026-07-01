@@ -88,6 +88,9 @@ def register_agent(payload: Dict[str, Any]) -> Dict[str, Any]:
         "description": payload.get("description", ""),
         "status": payload.get("status", "offline"),
         "endpoint": payload.get("endpoint", ""),
+        # Classification: "agent" (interactive, LLM-backed, autonomous) vs
+        # "bot" (deterministic function executor).
+        "kind": payload.get("kind", "agent"),
         "tags": payload.get("tags", []),
         "created_at": _utc_now(),
     }

@@ -1,4 +1,4 @@
-.PHONY: setup run stop logs clean ts-setup ts-build ts-dev
+.PHONY: setup run stop logs test clean ts-setup ts-build ts-dev
 
 # ─── Python Stack ───────────────────────────
 
@@ -26,6 +26,9 @@ stop:
 
 logs:
 	@tail -f /tmp/xmcp-*.log 2>/dev/null || echo "No log files found."
+
+test:
+	. .venv/bin/activate && pip install -q -r requirements-dev.txt && pytest tests/ -v
 
 # ─── Docker ─────────────────────────────────
 
