@@ -106,7 +106,9 @@ class TradeDeskAgent(TeamMember):
             return None
         # Card metadata round-trips through JSON and external stores, so
         # coerce before trusting types.
-        ticker = str(metadata.get("ticker", "?")).upper()
+        ticker = str(metadata.get("ticker", "")).upper()
+        if not re.fullmatch(r"[A-Z]{1,10}", ticker):
+            return f"⚠️ Invalid ticker '{ticker}' on trade card {item.get('id', '?')}; nothing executed."
         side = str(metadata.get("side", "buy")).lower()
         if side not in ("buy", "sell"):
             return f"⚠️ Invalid side '{side}' on trade card {item.get('id', '?')}; nothing executed."

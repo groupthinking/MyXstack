@@ -130,6 +130,25 @@ def process_mention(client: tweepy.Client, mention) -> bool:
         )
     except Exception as exc:
         print(f"Error replying to mention {mention.id}: {exc}", flush=True)
+        # Best-effort: surface the dropped reply on the timeline so an
+        # operator can recover it. The mention is not retried — its card
+        # (and any side effects) already landed.
+        try:
+            push_timeline_card(
+                {
+                    "title": f"Failed to post reply to mention {mention.id}",
+                    "body": f"Intended reply:\n{reply.text}\n\nError: {exc}",
+                    "actions": [],
+                    "metadata": {
+                        "agent_id": member.profile.id,
+                        "mention_id": mention.id,
+                        "error": str(exc),
+                    },
+                },
+                posted_by=member.profile.id,
+            )
+        except Exception:
+            pass
     return True
 
 

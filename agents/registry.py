@@ -72,7 +72,11 @@ def register_team() -> None:
         # order is not guaranteed), so retry with backoff before giving up.
         for attempt in range(3):
             try:
-                requests.post(f"{timeline_url}/v1/a2a/agents", json=payload, timeout=10)
+                response = requests.post(
+                    f"{timeline_url}/v1/a2a/agents", json=payload, timeout=10
+                )
+                # 4xx/5xx (e.g. server still booting) must retry too.
+                response.raise_for_status()
                 break
             except requests.RequestException as exc:
                 if attempt == 2:

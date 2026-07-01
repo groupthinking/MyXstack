@@ -144,11 +144,13 @@ def main() -> None:
             result = None
             item = get_timeline_item(item_id) if item_id else None
             item_meta = (item.get("metadata") or {}) if item else {}
-            if item and action and item_meta.get("processed_action") == action:
-                # Replay guard: a crash between execute and save_last_seen
-                # re-delivers the message; don't run the side effect twice.
+            if item and action and item_meta.get("processed_action"):
+                # A processed item is terminal: skip replays of the same
+                # action AND late conflicting actions (e.g. Reject after an
+                # Approve already executed).
                 print(
-                    f"Skipping already-processed '{action}' on item {item_id}",
+                    f"Skipping '{action}' on item {item_id}: already processed "
+                    f"'{item_meta['processed_action']}'",
                     flush=True,
                 )
                 last_seen = created_at or datetime.now(timezone.utc)
