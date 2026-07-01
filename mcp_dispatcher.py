@@ -142,7 +142,13 @@ def main() -> None:
             # Structured path: if the card belongs to a team member, let it
             # execute the action (e.g. Tradedesk fills an approved trade).
             result = None
+            execution_failed = False
             item = get_timeline_item(item_id) if item_id else None
+            # Fail closed when the card context can't be loaded: ownership
+            # is unknown, so the generic executor must not run.
+            if item_id and item is None:
+                result = f"Could not load timeline item {item_id}; nothing executed."
+                execution_failed = True
             item_meta = (item.get("metadata") or {}) if item else {}
             if item and action and item_meta.get("processed_action"):
                 # A processed item is terminal: skip replays of the same
@@ -163,6 +169,7 @@ def main() -> None:
                     try:
                         result = owner.execute_action(item, action)
                     except Exception as exc:
+                        execution_failed = True
                         result = f"Agent {owner.profile.id} failed to execute '{action}': {exc}"
                 # Fail closed: a card owned by a member must never fall
                 # through to the generic Grok executor, or the member's
@@ -183,9 +190,12 @@ Use MCP tools to execute any required external steps. Return a concise status up
                 result = call_grok(prompt)
 
             if item_id:
-                update_timeline_item(
-                    item_id, {"mcp_result": result, "processed_action": action}
-                )
+                # A failed execution must stay retryable: record the result
+                # but don't mark the action processed.
+                update = {"mcp_result": result}
+                if not execution_failed:
+                    update["processed_action"] = action
+                update_timeline_item(item_id, update)
 
             send_message(
                 from_agent=agent_id,
