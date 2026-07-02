@@ -15,6 +15,19 @@ Four services working together:
 
 **Flow**: Mention arrives → Listener sends to Grok (with MCP tools) → Grok crafts reply → posted to X + timeline card created → user approves/rejects via timeline → Dispatcher executes follow-up actions.
 
+### Agent Team
+
+Mentions are routed to a **team of @handle-addressable members** (see [docs/AGENTS.md](docs/AGENTS.md)):
+
+```text
+@MyXstack @Tradedesk $TSLA buy 100     → approval-gated trade proposal (paper broker)
+@MyXstack @Research why is $NVDA down? → Grok research brief on the timeline
+@MyXstack @Shopping shoes under $150   → product picks, purchase approval-gated
+@MyXstack @TickerBot $BTC              → deterministic cashtag lookup (API bot)
+```
+
+Members are classified as **interactive agents** (`kind: agent` — conversational, LLM-backed, can delegate over A2A) or **API bots** (`kind: bot` — deterministic input → function → output). Untagged mentions fall back to the original generic Grok behavior.
+
 There is also an alternative **TypeScript standalone agent** in `src/` that combines listening + MCP server in a single process (see [TypeScript Agent](#typescript-agent) below).
 
 ## Prerequisites

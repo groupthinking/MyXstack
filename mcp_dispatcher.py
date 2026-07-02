@@ -10,6 +10,8 @@ from xai_sdk import Client
 from xai_sdk.chat import user
 from xai_sdk.tools import mcp
 
+from agents.registry import find_member
+
 LAST_SEEN_PATH = Path(os.getenv("XMCP_DISPATCH_LAST_SEEN", "~/.xmcp/dispatch_last_seen.txt")).expanduser()
 
 
@@ -28,6 +30,18 @@ def load_last_seen() -> Optional[str]:
     if not LAST_SEEN_PATH.exists():
         return None
     return LAST_SEEN_PATH.read_text(encoding="utf-8").strip() or None
+
+
+def get_timeline_item(item_id: str) -> Optional[Dict]:
+    timeline_url = os.getenv("TIMELINE_API_URL", "http://127.0.0.1:8080")
+    try:
+        response = requests.get(f"{timeline_url}/v1/timeline/items/{item_id}", timeout=10)
+        if response.status_code != 200:
+            return None
+        return response.json()
+    except (requests.RequestException, ValueError) as exc:
+        print(f"Could not fetch timeline item {item_id}: {exc}", flush=True)
+        return None
 
 
 def get_messages(agent_id: str) -> list[Dict]:
@@ -125,14 +139,66 @@ def main() -> None:
             item_id = metadata.get("timeline_item_id")
             action = metadata.get("action")
 
-            prompt = f"""
+            # Structured path: if the card belongs to a team member, let it
+            # execute the action (e.g. Tradedesk fills an approved trade).
+            result = None
+            execution_failed = False
+            item = get_timeline_item(item_id) if item_id else None
+            # Fail closed when the card context can't be loaded: ownership
+            # is unknown, so the generic executor must not run.
+            if item_id and item is None:
+                result = f"Could not load timeline item {item_id}; nothing executed."
+                execution_failed = True
+            item_meta = (item.get("metadata") or {}) if item else {}
+            if item and action and item_meta.get("processed_action"):
+                # A processed item is terminal: skip replays of the same
+                # action AND late conflicting actions (e.g. Reject after an
+                # Approve already executed).
+                print(
+                    f"Skipping '{action}' on item {item_id}: already processed "
+                    f"'{item_meta['processed_action']}'",
+                    flush=True,
+                )
+                last_seen = created_at or datetime.now(timezone.utc)
+                save_last_seen(last_seen.isoformat())
+                continue
+            owned_agent_id = item_meta.get("agent_id")
+            if item and action and owned_agent_id:
+                owner = find_member(owned_agent_id)
+                if owner:
+                    try:
+                        result = owner.execute_action(item, action)
+                    except Exception as exc:
+                        execution_failed = True
+                        result = f"Agent {owner.profile.id} failed to execute '{action}': {exc}"
+                # Fail closed: a card owned by a member must never fall
+                # through to the generic Grok executor, or the member's
+                # safety policy (paper-only trades, intent-only purchases)
+                # would be bypassed.
+                if result is None:
+                    result = (
+                        f"Action '{action}' not handled by agent {owned_agent_id}; "
+                        "nothing executed (owned cards never use the generic fallback)."
+                    )
+
+            # Fallback: legacy generic Grok execution.
+            if result is None:
+                prompt = f"""
 You are a workflow agent. A user took the action '{action}' on timeline item {item_id}.
 Use MCP tools to execute any required external steps. Return a concise status update.
 """
-            result = call_grok(prompt)
+                result = call_grok(prompt)
+                if result == "Missing XAI_API_KEY.":
+                    # Grok never ran; don't consume the action.
+                    execution_failed = True
 
             if item_id:
-                update_timeline_item(item_id, {"mcp_result": result})
+                # A failed execution must stay retryable: record the result
+                # but don't mark the action processed.
+                update = {"mcp_result": result}
+                if not execution_failed:
+                    update["processed_action"] = action
+                update_timeline_item(item_id, update)
 
             send_message(
                 from_agent=agent_id,

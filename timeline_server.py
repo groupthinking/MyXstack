@@ -1,5 +1,5 @@
 import os
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Literal, Optional
 
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, ConfigDict, Field
@@ -41,6 +41,9 @@ class AgentCreate(BaseModel):
     description: Optional[str] = ""
     status: Optional[str] = "offline"
     endpoint: Optional[str] = ""
+    # "agent" (interactive, LLM-backed) or "bot" (deterministic executor).
+    # Not Optional: an explicit null must be rejected, not persisted.
+    kind: Literal["agent", "bot"] = "agent"
     tags: List[str] = Field(default_factory=list)
 
 

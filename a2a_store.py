@@ -88,13 +88,23 @@ def register_agent(payload: Dict[str, Any]) -> Dict[str, Any]:
         "description": payload.get("description", ""),
         "status": payload.get("status", "offline"),
         "endpoint": payload.get("endpoint", ""),
+        # Classification: "agent" (interactive, LLM-backed, autonomous) vs
+        # "bot" (deterministic function executor). Normalized so null or
+        # unknown values can never enter the registry.
+        "kind": payload.get("kind") if payload.get("kind") in ("agent", "bot") else "agent",
         "tags": payload.get("tags", []),
         "created_at": _utc_now(),
     }
     with A2A_STORE_LOCK:
         data = _read_store()
-        if any(existing.get("id") == agent["id"] for existing in data["agents"]):
-            return agent
+        for existing in data["agents"]:
+            if existing.get("id") == agent["id"]:
+                # Re-registration updates mutable fields so seeded records
+                # (e.g. x-agent without kind) don't stay stale forever.
+                for field in ("name", "description", "status", "endpoint", "kind", "tags"):
+                    existing[field] = agent[field]
+                _write_store(data)
+                return existing
         data["agents"].append(agent)
         _write_store(data)
     return agent

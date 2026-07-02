@@ -8,9 +8,9 @@ import requests
 import tweepy
 from dotenv import load_dotenv
 from tweepy.errors import HTTPException as TweepyHTTPException
-from xai_sdk import Client
-from xai_sdk.chat import user
-from xai_sdk.tools import mcp
+
+from agents.base import MentionContext
+from agents.registry import register_team, route_mention
 
 LAST_SEEN_PATH = Path(os.getenv("XMCP_LAST_SEEN_PATH", "~/.xmcp/last_seen.txt")).expanduser()
 POLL_SECONDS = int(os.getenv("POLL_INTERVAL_SECONDS", "60"))
@@ -47,52 +47,116 @@ def build_client() -> tweepy.Client:
     )
 
 
-def get_grok_reply(prompt: str) -> str:
-    api_key = os.getenv("XAI_API_KEY", "").strip()
-    if not api_key:
-        return "Missing XAI_API_KEY."
-    model = os.getenv("XAI_MODEL", "grok-4-1-fast")
-    server_url = os.getenv("MCP_SERVER_URL", "http://127.0.0.1:8000/mcp")
-
-    client = Client(api_key=api_key)
-    chat = client.chat.create(
-        model=model,
-        tools=[mcp(server_url=server_url)],
-    )
-    chat.append(user(prompt))
-
-    response_text = ""
-    for _, chunk in chat.stream():
-        if chunk.content:
-            response_text += chunk.content
-    return response_text.strip() or "Thinking..."
-
-
-def push_timeline_card(title: str, body: str, metadata: dict) -> None:
+def push_timeline_card(card: dict, posted_by: str) -> None:
     timeline_url = os.getenv("TIMELINE_API_URL", "http://127.0.0.1:8080")
     user_id = os.getenv("TIMELINE_USER_ID", "default")
     payload = {
         "user_id": user_id,
-        "title": title,
-        "body": body,
-        "posted_by": "x-agent",
-        "actions": ["Approve", "Reject", "Snooze"],
-        "metadata": metadata,
+        "title": card.get("title", "Untitled"),
+        "body": card.get("body", ""),
+        "posted_by": posted_by,
+        "actions": card.get("actions", []),
+        "metadata": card.get("metadata", {}),
     }
-    requests.post(f"{timeline_url}/v1/timeline/items", json=payload, timeout=10)
+    response = requests.post(f"{timeline_url}/v1/timeline/items", json=payload, timeout=10)
+    # Surface 4xx/5xx as failures so the caller holds the watermark and
+    # retries — a lost card would silently defeat the approval gate.
+    response.raise_for_status()
 
 
-def ensure_agent_registered() -> None:
-    timeline_url = os.getenv("TIMELINE_API_URL", "http://127.0.0.1:8080")
-    payload = {
-        "id": "x-agent",
-        "name": "X Agent",
-        "description": "Handles @mentions and X actions.",
-        "status": "online",
-        "endpoint": "x",
-        "tags": ["x", "social"],
-    }
-    requests.post(f"{timeline_url}/v1/a2a/agents", json=payload, timeout=10)
+def process_mention(client: tweepy.Client, mention) -> bool:
+    """Route one mention to its team member and deliver the results.
+
+    Returns False when the approval card could not be pushed — the caller
+    must then NOT advance the last-seen watermark, so the mention is
+    retried next poll instead of its approval-gated proposal being lost.
+    The card is pushed before the X reply for the same reason: the card is
+    the safety-critical artifact.
+    """
+    context = MentionContext(
+        text=mention.text,
+        mention_id=mention.id,
+        author_id=mention.author_id,
+        conversation_id=mention.conversation_id,
+    )
+    member = route_mention(context)
+    print(
+        f"Mention {mention.id} routed to {member.profile.id} ({member.profile.kind})",
+        flush=True,
+    )
+    try:
+        reply = member.handle_mention(context)
+    except Exception as exc:
+        print(
+            f"Error from agent {member.profile.id} for mention {mention.id}: {exc}",
+            flush=True,
+        )
+        # Dead-letter: surface the failure on the timeline so the mention
+        # isn't silently dropped, without poison-pilling the poll loop.
+        # Only if even the dead-letter card can't land do we hold the
+        # watermark and retry the mention next poll.
+        try:
+            push_timeline_card(
+                {
+                    "title": f"Agent error on mention {mention.id}",
+                    "body": f"{member.profile.id} failed: {exc}\n\nMention:\n{mention.text}",
+                    "actions": [],
+                    "metadata": {
+                        "agent_id": member.profile.id,
+                        "mention_id": mention.id,
+                        "error": str(exc),
+                    },
+                },
+                posted_by=member.profile.id,
+            )
+            return True
+        except Exception:
+            return False
+
+    if reply.card:
+        try:
+            push_timeline_card(reply.card, posted_by=member.profile.id)
+        except Exception as exc:
+            print(
+                f"Error pushing timeline card for mention {mention.id}: {exc}; will retry",
+                flush=True,
+            )
+            return False
+
+    try:
+        client.create_tweet(
+            text=reply.text[:280],
+            in_reply_to_tweet_id=mention.id,
+        )
+    except Exception as exc:
+        print(f"Error replying to mention {mention.id}: {exc}", flush=True)
+        # Best-effort: surface the dropped reply on the timeline so an
+        # operator can recover it. The mention is not retried — its card
+        # (and any side effects) already landed.
+        try:
+            push_timeline_card(
+                {
+                    "title": f"Failed to post reply to mention {mention.id}",
+                    "body": f"Intended reply:\n{reply.text}\n\nError: {exc}",
+                    "actions": [],
+                    "metadata": {
+                        "agent_id": member.profile.id,
+                        "mention_id": mention.id,
+                        "error": str(exc),
+                    },
+                },
+                posted_by=member.profile.id,
+            )
+        except Exception as recovery_exc:
+            print(
+                f"Error pushing failed-reply card for mention {mention.id}: {recovery_exc}",
+                flush=True,
+            )
+            # Reply-only mentions (no proposal card landed earlier) would
+            # otherwise vanish entirely — hold the watermark and retry.
+            if not reply.card:
+                return False
+    return True
 
 
 def main() -> None:
@@ -102,7 +166,7 @@ def main() -> None:
     if not me:
         raise RuntimeError("Could not resolve authenticated X user for listener")
     bot_id = me.id
-    ensure_agent_registered()
+    register_team()
 
     last_seen = load_last_seen()
     start_time = datetime.now(timezone.utc) - timedelta(minutes=10)
@@ -137,44 +201,14 @@ def main() -> None:
             time.sleep(POLL_SECONDS)
             continue
 
-        for mention in mentions.data or []:
-            context = mention.text
-            prompt = f"""
-You are an autonomous X agent bot. You were mentioned in this thread:
-
-{context}
-
-Analyze the request/intent. Use available tools to respond helpfully.
-Always reply directly to the mentioning post. Be concise and actionable.
-"""
-            try:
-                grok_reply = get_grok_reply(prompt)
-            except Exception as exc:
-                print(f"Error getting Grok reply for mention {mention.id}: {exc}", flush=True)
-                grok_reply = "Processing your tag... (error generating full response)"
-
-            try:
-                client.create_tweet(
-                    text=grok_reply[:280],
-                    in_reply_to_tweet_id=mention.id,
-                )
-            except Exception as exc:
-                print(f"Error replying to mention {mention.id}: {exc}", flush=True)
-
-            try:
-                push_timeline_card(
-                    title=f"New mention {mention.id}",
-                    body=context,
-                    metadata={
-                        "mention_id": mention.id,
-                        "author_id": mention.author_id,
-                        "conversation_id": mention.conversation_id,
-                        "reply_preview": grok_reply[:280],
-                    },
-                )
-            except Exception as exc:
-                print(f"Error pushing timeline card for mention {mention.id}: {exc}", flush=True)
-
+        # The X API returns mentions newest-first; process oldest-first so
+        # the last-seen watermark only ever moves forward.
+        epoch = datetime(1970, 1, 1, tzinfo=timezone.utc)
+        for mention in sorted(mentions.data or [], key=lambda m: m.created_at or epoch):
+            if not process_mention(client, mention):
+                # Card push failed: stop here so this mention (and later
+                # ones) are retried on the next poll.
+                break
             start_time = mention.created_at or datetime.now(timezone.utc)
             save_last_seen(start_time.isoformat())
 
