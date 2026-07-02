@@ -188,6 +188,9 @@ You are a workflow agent. A user took the action '{action}' on timeline item {it
 Use MCP tools to execute any required external steps. Return a concise status update.
 """
                 result = call_grok(prompt)
+                if result == "Missing XAI_API_KEY.":
+                    # Grok never ran; don't consume the action.
+                    execution_failed = True
 
             if item_id:
                 # A failed execution must stay retryable: record the result

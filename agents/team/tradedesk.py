@@ -8,6 +8,7 @@ Nothing executes until a human approves the card, and execution goes to
 the paper broker unless a real adapter is wired in.
 """
 
+import math
 import os
 import re
 from typing import Any, Dict, Optional
@@ -116,7 +117,7 @@ class TradeDeskAgent(TeamMember):
             quantity = float(metadata.get("quantity", 1))
         except (TypeError, ValueError):
             return f"⚠️ Invalid quantity on trade card {item.get('id', '?')}; nothing executed."
-        if quantity <= 0:
+        if not math.isfinite(quantity) or quantity <= 0:
             return f"⚠️ Invalid quantity {quantity:g} on trade card {item.get('id', '?')}; nothing executed."
         summary = f"{side.upper()} {quantity:g} ${ticker}"
         if action.lower() == "approve":

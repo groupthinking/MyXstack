@@ -147,8 +147,15 @@ def process_mention(client: tweepy.Client, mention) -> bool:
                 },
                 posted_by=member.profile.id,
             )
-        except Exception:
-            pass
+        except Exception as recovery_exc:
+            print(
+                f"Error pushing failed-reply card for mention {mention.id}: {recovery_exc}",
+                flush=True,
+            )
+            # Reply-only mentions (no proposal card landed earlier) would
+            # otherwise vanish entirely — hold the watermark and retry.
+            if not reply.card:
+                return False
     return True
 
 
