@@ -41,10 +41,15 @@ def parse_trade_command(text: str) -> Optional[Dict[str, Any]]:
     match = _TICKER_FIRST.search(text) or _SIDE_FIRST.search(text)
     if not match:
         return None
+    quantity = float(match.group("qty")) if match.group("qty") else 1.0
+    # Huge digit strings float to inf (breaking JSON cards) and zero is
+    # not a tradable quantity — treat both as unparseable.
+    if not math.isfinite(quantity) or quantity <= 0:
+        return None
     return {
         "ticker": match.group("ticker").upper(),
         "side": match.group("side").lower(),
-        "quantity": float(match.group("qty")) if match.group("qty") else 1.0,
+        "quantity": quantity,
     }
 
 

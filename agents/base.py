@@ -133,7 +133,7 @@ def send_a2a_message(
     bus hiccup can't kill mention processing mid-flight."""
     timeline_url = os.getenv("TIMELINE_API_URL", "http://127.0.0.1:8080")
     try:
-        requests.post(
+        response = requests.post(
             f"{timeline_url}/v1/a2a/messages",
             json={
                 "from": from_agent,
@@ -144,6 +144,8 @@ def send_a2a_message(
             },
             timeout=10,
         )
+        # requests doesn't raise on 4xx/5xx; a rejected message is a failure.
+        response.raise_for_status()
         return True
     except requests.RequestException as exc:
         print(f"Could not send A2A message to {to}: {exc}", flush=True)

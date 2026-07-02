@@ -28,6 +28,11 @@ def test_parse_requires_cashtag():
     assert parse_trade_command("@Tradedesk hello") is None
 
 
+def test_parse_rejects_zero_and_infinite_quantity():
+    assert parse_trade_command("$TSLA buy 0") is None
+    assert parse_trade_command("$TSLA buy 1" + "0" * 400) is None
+
+
 def test_mention_creates_approval_card(tmp_path, monkeypatch):
     monkeypatch.setenv("TRADEDESK_USE_GROK", "0")
     agent = TradeDeskAgent(broker=PaperBroker(str(tmp_path / "trades.json")))
