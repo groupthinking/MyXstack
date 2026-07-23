@@ -10,7 +10,7 @@ pydantic>=2.0.0
 
 # X API listener
 tweepy>=4.17.0
-requests>=2.33.1
+requests>=2.34.2
 
 # Grok / xAI
 xai-sdk>=1.17.0
