@@ -12,6 +12,11 @@ from agents.router import find_target
 
 
 def build_team() -> List[TeamMember]:
+    """Construct the roster of available team agents.
+    
+    Returns:
+        List[TeamMember]: Team members ordered with the general agent last as the fallback.
+    """
     from agents.team.general import GeneralAgent
     from agents.team.research import ResearchAgent
     from agents.team.shopping import ShoppingAgent
@@ -27,6 +32,12 @@ _TEAM_LOCK = threading.Lock()
 
 
 def get_team() -> List[TeamMember]:
+    """
+    Return the cached team roster, constructing it on first access.
+    
+    Returns:
+    	List[TeamMember]: The team roster.
+    """
     global _TEAM
     if _TEAM is None:
         with _TEAM_LOCK:
@@ -46,6 +57,15 @@ def route_mention(mention: MentionContext) -> TeamMember:
 
 
 def find_member(agent_id: Optional[str]) -> Optional[TeamMember]:
+    """
+    Find a team member by agent ID.
+    
+    Parameters:
+    	agent_id (Optional[str]): The ID of the agent to locate.
+    
+    Returns:
+    	Optional[TeamMember]: The matching team member, or `None` if no member has the specified ID.
+    """
     if not agent_id:
         return None
     for member in get_team():
@@ -55,7 +75,11 @@ def find_member(agent_id: Optional[str]) -> Optional[TeamMember]:
 
 
 def register_team() -> None:
-    """Register every team member in the timeline server's A2A registry."""
+    """
+    Register all team members with the timeline server's A2A registry.
+    
+    The registry URL is read from the `TIMELINE_API_URL` environment variable, defaulting to the local timeline server. Each member is retried up to three times when registration requests fail.
+    """
     timeline_url = os.getenv("TIMELINE_API_URL", "http://127.0.0.1:8080")
     for member in get_team():
         profile = member.profile

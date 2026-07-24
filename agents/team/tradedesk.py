@@ -38,6 +38,15 @@ USAGE = "Format: @Tradedesk $TICKER buy|sell [quantity] — e.g. @Tradedesk $TSL
 
 
 def parse_trade_command(text: str) -> Optional[Dict[str, Any]]:
+    """
+    Parse a trade command and extract its ticker, side, and quantity.
+    
+    Parameters:
+    	text (str): Text containing a tagged buy or sell command.
+    
+    Returns:
+    	(dict[str, Any] | None): A dictionary with the normalized ticker, side, and positive finite quantity, or `None` if the command is invalid.
+    """
     match = _TICKER_FIRST.search(text) or _SIDE_FIRST.search(text)
     if not match:
         return None
@@ -55,6 +64,7 @@ def parse_trade_command(text: str) -> Optional[Dict[str, Any]]:
 
 class TradeDeskAgent(TeamMember):
     def __init__(self, broker: Optional[PaperBroker] = None):
+        """Initialize the trading agent with the supplied broker or a paper-trading broker by default."""
         super().__init__(
             AgentProfile(
                 id="tradedesk",
@@ -68,6 +78,18 @@ class TradeDeskAgent(TeamMember):
         self.broker = broker or PaperBroker()
 
     def handle_mention(self, mention: MentionContext) -> AgentReply:
+        """
+        Create an approval-gated trade proposal from a mention.
+        
+        Parameters:
+            mention (MentionContext): Mention containing the trade command, text, identifier,
+                and author information.
+        
+        Returns:
+            AgentReply: A parse-error response when the mention is invalid; otherwise, a
+                response containing a trade proposal card with approval and rejection actions.
+                The card may include market context when Grok enrichment is enabled.
+        """
         trade = parse_trade_command(mention.text)
         if not trade:
             return AgentReply(text=f"Couldn't parse a trade. {USAGE}")
@@ -107,6 +129,16 @@ class TradeDeskAgent(TeamMember):
         return AgentReply(text=reply, card=card)
 
     def execute_action(self, item: Dict[str, Any], action: str) -> Optional[str]:
+        """
+        Execute or reject a validated trade proposal based on the requested action.
+        
+        Parameters:
+        	item (Dict[str, Any]): Trade proposal card containing trade metadata.
+        	action (str): Approval or rejection action to apply.
+        
+        Returns:
+        	str | None: A status message for a handled trade action, or `None` for unrelated cards or unsupported actions.
+        """
         metadata = item.get("metadata") or {}
         if metadata.get("action_type") != "trade":
             return None

@@ -7,13 +7,15 @@ from agents.base import TeamMember
 
 
 def find_target(text: str, team: List[TeamMember]) -> Optional[TeamMember]:
-    """Return the team member whose @handle appears earliest in the text.
-
-    Matching is case-insensitive and word-bounded, so @Tradedesk matches
-    "@tradedesk $TSLA buy" but not "@TradedeskFanClub". When several
-    members are tagged, the one tagged first wins (user intent, not roster
-    order). Members with an empty handle (the fallback agent) are never
-    matched here.
+    """
+    Selects the team member whose handle is mentioned first in the text.
+    
+    Matching is case-insensitive and requires a word boundary after the handle.
+    Members with empty handles are not eligible for selection.
+    
+    Returns:
+        The team member associated with the earliest matching handle, or `None`
+        if no handle is mentioned.
     """
     lowered = text.lower()
     best_member: Optional[TeamMember] = None

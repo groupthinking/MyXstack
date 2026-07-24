@@ -29,6 +29,15 @@ class TickerBot(TeamMember):
         )
 
     def handle_mention(self, mention: MentionContext) -> AgentReply:
+        """
+        Format a response for cashtags found in a mention.
+        
+        Parameters:
+            mention (MentionContext): The mention whose text is searched for cashtags.
+        
+        Returns:
+            AgentReply: A usage instruction when no cashtags are found; otherwise, newline-delimited live-search links for the unique tickers.
+        """
         tickers = sorted({m.group("ticker").upper() for m in _CASHTAG.finditer(mention.text)})
         if not tickers:
             return AgentReply(text="Usage: @TickerBot $TICKER — e.g. @TickerBot $TSLA")

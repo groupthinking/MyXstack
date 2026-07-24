@@ -57,14 +57,37 @@ class TeamMember:
     """Base class for every member of the agent team."""
 
     def __init__(self, profile: AgentProfile):
+        """
+        Initialize a team member with its profile.
+        
+        Parameters:
+            profile (AgentProfile): Profile describing the team member.
+        """
         self.profile = profile
 
     def handle_mention(self, mention: MentionContext) -> AgentReply:
+        """
+        Handle an inbound mention and produce a reply.
+        
+        Parameters:
+        	mention (MentionContext): The inbound mention to process.
+        
+        Returns:
+        	AgentReply: The intended reply and any optional timeline approval card.
+        """
         raise NotImplementedError
 
     def execute_action(self, item: Dict[str, Any], action: str) -> Optional[str]:
-        """Execute a timeline action (e.g. Approve/Reject) on a card this
-        member created. Return a status string, or None if unhandled."""
+        """
+        Execute a timeline action for this team member.
+        
+        Parameters:
+            item (Dict[str, Any]): Timeline item containing the action context.
+            action (str): Action requested for the timeline item.
+        
+        Returns:
+            Optional[str]: A status message when the action is handled, or `None` when it is unhandled.
+        """
         return None
 
 
@@ -86,7 +109,18 @@ def wrap_untrusted(text: str) -> str:
 def truncate_for_reply(
     text: str, limit: int = 270, suffix: str = "… Full detail on your timeline."
 ) -> str:
-    """Shorten LLM output to fit an X reply, pointing at the timeline card."""
+    """
+    Shorten text to fit the reply length target and append a timeline pointer when needed.
+    
+    Parameters:
+        text (str): Text to shorten.
+        limit (int): Maximum length of the result.
+        suffix (str): Text appended to truncated content.
+    
+    Returns:
+        str: The original text when it fits within the limit; otherwise, truncated text
+            followed by the suffix.
+    """
     if len(text) <= limit:
         return text
     if len(suffix) >= limit:
@@ -97,7 +131,15 @@ def truncate_for_reply(
 
 
 def grok_chat(prompt: str) -> str:
-    """One-shot Grok call with MCP tools (same wiring as the listener)."""
+    """
+    Generate a response from Grok using the configured MCP server.
+    
+    Parameters:
+        prompt (str): The prompt to send to Grok.
+    
+    Returns:
+        str: The generated response with surrounding whitespace removed, or an empty string when no API key is configured.
+    """
     api_key = os.getenv("XAI_API_KEY", "").strip()
     if not api_key:
         return ""
@@ -127,10 +169,19 @@ def send_a2a_message(
     content: str,
     metadata: Optional[Dict[str, Any]] = None,
 ) -> bool:
-    """Post a message on the A2A bus so members can talk to each other.
-
-    Returns False (instead of raising) on timeline-server failures so a
-    bus hiccup can't kill mention processing mid-flight."""
+    """
+    Post a message to the A2A bus for communication between team members.
+    
+    Parameters:
+        from_agent (str): Identifier of the sending team member.
+        to (str): Identifier of the receiving team member.
+        message_type (str): Message category.
+        content (str): Message content.
+        metadata (Optional[Dict[str, Any]]): Additional message metadata.
+    
+    Returns:
+        bool: `True` if the message is accepted; `False` if the request fails.
+    """
     timeline_url = os.getenv("TIMELINE_API_URL", "http://127.0.0.1:8080")
     try:
         response = requests.post(

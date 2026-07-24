@@ -27,12 +27,26 @@ def save_last_seen(value: str) -> None:
 
 
 def load_last_seen() -> Optional[str]:
+    """Load the persisted timestamp of the last processed message.
+    
+    Returns:
+    	str: The stripped timestamp, or `None` if the file is missing or empty.
+    """
     if not LAST_SEEN_PATH.exists():
         return None
     return LAST_SEEN_PATH.read_text(encoding="utf-8").strip() or None
 
 
 def get_timeline_item(item_id: str) -> Optional[Dict]:
+    """
+    Fetch a timeline item by its identifier.
+    
+    Parameters:
+    	item_id (str): Identifier of the timeline item to fetch.
+    
+    Returns:
+    	Optional[Dict]: The timeline item data, or None if the item cannot be retrieved or parsed.
+    """
     timeline_url = os.getenv("TIMELINE_API_URL", "http://127.0.0.1:8080")
     try:
         response = requests.get(f"{timeline_url}/v1/timeline/items/{item_id}", timeout=10)
@@ -45,6 +59,15 @@ def get_timeline_item(item_id: str) -> Optional[Dict]:
 
 
 def get_messages(agent_id: str) -> list[Dict]:
+    """
+    Retrieve messages addressed to an agent from the timeline service.
+    
+    Parameters:
+    	agent_id (str): Identifier of the agent whose messages to retrieve.
+    
+    Returns:
+    	list[Dict]: Messages returned by the service, or an empty list if the request is unsuccessful.
+    """
     timeline_url = os.getenv("TIMELINE_API_URL", "http://127.0.0.1:8080")
     response = requests.get(f"{timeline_url}/v1/a2a/agents/{agent_id}/messages", timeout=10)
     if response.status_code != 200:
@@ -121,6 +144,12 @@ def _parse_time(value: Optional[str]) -> Optional[datetime]:
 
 
 def main() -> None:
+    """
+    Polls for timeline actions, executes them through the appropriate agent or fallback executor, and records their results.
+    
+    The dispatcher registers the configured agent, processes new actions, prevents replay of processed actions, and persists processing progress. Failed executions remain retryable.
+    
+    """
     load_env()
     agent_id = os.getenv("MCP_DISPATCH_AGENT_ID", "mcp-orchestrator")
     last_seen = _parse_time(load_last_seen())

@@ -35,6 +35,12 @@ def load_last_seen() -> Optional[str]:
 
 
 def build_client() -> tweepy.Client:
+    """
+    Create an authenticated X API client from environment credentials.
+    
+    Returns:
+    	tweepy.Client: Configured client with rate-limit waiting enabled.
+    """
     access_token = os.getenv("X_ACCESS_TOKEN") or os.getenv("X_OAUTH_ACCESS_TOKEN")
     access_secret = os.getenv("X_ACCESS_SECRET") or os.getenv("X_OAUTH_ACCESS_TOKEN_SECRET")
     return tweepy.Client(
@@ -48,6 +54,13 @@ def build_client() -> tweepy.Client:
 
 
 def push_timeline_card(card: dict, posted_by: str) -> None:
+    """
+    Publish a timeline card for the configured user.
+    
+    Parameters:
+    	card (dict): Card content, including optional title, body, actions, and metadata.
+    	posted_by (str): Identifier of the user or agent posting the card.
+    """
     timeline_url = os.getenv("TIMELINE_API_URL", "http://127.0.0.1:8080")
     user_id = os.getenv("TIMELINE_USER_ID", "default")
     payload = {
@@ -65,13 +78,17 @@ def push_timeline_card(card: dict, posted_by: str) -> None:
 
 
 def process_mention(client: tweepy.Client, mention) -> bool:
-    """Route one mention to its team member and deliver the results.
-
-    Returns False when the approval card could not be pushed — the caller
-    must then NOT advance the last-seen watermark, so the mention is
-    retried next poll instead of its approval-gated proposal being lost.
-    The card is pushed before the X reply for the same reason: the card is
-    the safety-critical artifact.
+    """
+    Route a mention to its team member and deliver the resulting artifacts.
+    
+    Parameters:
+        mention: The mention to process, including its text, identifier, author,
+            and conversation identifier.
+    
+    Returns:
+        bool: `True` when processing is complete or the failure has been surfaced
+            to the timeline; `False` when a required artifact could not be
+            delivered and the mention should be retried.
     """
     context = MentionContext(
         text=mention.text,
@@ -160,6 +177,11 @@ def process_mention(client: tweepy.Client, mention) -> bool:
 
 
 def main() -> None:
+    """Polls X for mentions, processes them in chronological order, and persists the processing watermark.
+    
+    Raises:
+    	RuntimeError: If the authenticated X user cannot be resolved.
+    """
     load_env()
     client = build_client()
     me = client.get_me().data

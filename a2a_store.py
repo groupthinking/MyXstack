@@ -82,6 +82,16 @@ def get_agent(agent_id: str) -> Optional[Dict[str, Any]]:
 
 
 def register_agent(payload: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Register a new agent or update an existing agent with the same identifier.
+    
+    Parameters:
+        payload (Dict[str, Any]): Agent attributes, including optional identity,
+            descriptive, status, endpoint, classification, and tag fields.
+    
+    Returns:
+        Dict[str, Any]: The created agent record or the updated existing record.
+    """
     agent = {
         "id": payload.get("id") or str(uuid.uuid4()),
         "name": payload.get("name", "Agent"),

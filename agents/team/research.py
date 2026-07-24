@@ -22,6 +22,7 @@ from agents.base import (
 
 class ResearchAgent(TeamMember):
     def __init__(self):
+        """Initialize the research agent with its profile and identifying metadata."""
         super().__init__(
             AgentProfile(
                 id="research",
@@ -34,6 +35,15 @@ class ResearchAgent(TeamMember):
         )
 
     def handle_mention(self, mention: MentionContext) -> AgentReply:
+        """
+        Respond to a mention with a concise research brief and a full-brief timeline card.
+        
+        Parameters:
+            mention (MentionContext): The mention containing the research question and its identifier.
+        
+        Returns:
+            AgentReply: A truncated research response with a full brief card, or an offline status message when no brief is available.
+        """
         brief = grok_chat(
             "You are a research agent on X. Answer the question below concisely "
             "and factually, using available tools for live context.\n\n"
