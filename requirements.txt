@@ -6,7 +6,7 @@ python-dotenv>=1.2.2
 # Timeline / A2A API
 fastapi>=0.141.1
 uvicorn>=0.51.0
-pydantic>=2.0.0
+pydantic>=2.13.4
 
 # X API listener
 tweepy>=4.17.0
