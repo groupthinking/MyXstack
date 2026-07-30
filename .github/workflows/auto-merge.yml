@@ -15,8 +15,12 @@ jobs:
     steps:
       - name: Approve & Merge
         run: |
-          gh pr review "$PR_URL" --approve --body "🤖 Auto-approved dependabot update"
-          gh pr merge "$PR_URL" --auto --squash
+          # Approval fails when the repo setting "Allow GitHub Actions to
+          # create and approve pull requests" is disabled — warn, don't fail.
+          gh pr review "$PR_URL" --approve --body "🤖 Auto-approved dependabot update" \
+            || echo "::warning::GitHub Actions is not permitted to approve pull requests in this repository"
+          gh pr merge "$PR_URL" --auto --squash \
+            || echo "::warning::Could not enable auto-merge (it may be disabled in repository settings or the PR is already mergeable)"
         env:
           PR_URL: ${{ github.event.pull_request.html_url }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
