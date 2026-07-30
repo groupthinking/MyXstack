@@ -159,7 +159,11 @@ jobs:
       - uses: actions/checkout@v7
       - name: Auto-approve safe PRs
         if: github.actor == 'dependabot[bot]' || github.actor == 'github-actions[bot]'
-        run: gh pr review ${{ github.event.pull_request.number }} --approve --body "🤖 Auto-approved (trusted bot)"
+        run: |
+          # Approval fails when the repo setting "Allow GitHub Actions to
+          # create and approve pull requests" is disabled — warn, don't fail.
+          gh pr review ${{ github.event.pull_request.number }} --approve --body "🤖 Auto-approved (trusted bot)" \
+            || echo "::warning::GitHub Actions is not permitted to approve pull requests in this repository"
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       - name: Auto-merge Dependabot
