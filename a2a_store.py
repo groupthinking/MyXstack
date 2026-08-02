@@ -1,13 +1,17 @@
-import json
-import os
-import threading
 import uuid
-from datetime import datetime, timezone
-from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-A2A_STORE_PATH = Path(os.getenv("A2A_STORE_PATH", "~/.xmcp/a2a_store.json")).expanduser()
-A2A_STORE_LOCK = threading.Lock()
+from sqlalchemy import insert, select, update
+
+from storage_db import (
+    a2a_agents,
+    a2a_messages,
+    row_to_dict,
+    serialize_record,
+    utc_now,
+    write_connection,
+    read_connection,
+)
 
 DEFAULT_AGENTS = [
     {
@@ -16,6 +20,7 @@ DEFAULT_AGENTS = [
         "description": "Dispatches timeline actions to MCP-enabled tools.",
         "status": "online",
         "endpoint": "local",
+        "kind": "agent",
         "tags": ["mcp", "orchestrator"],
     },
     {
@@ -24,6 +29,7 @@ DEFAULT_AGENTS = [
         "description": "Handles @mentions and X actions.",
         "status": "online",
         "endpoint": "x",
+        "kind": "agent",
         "tags": ["x", "social"],
     },
     {
@@ -32,53 +38,63 @@ DEFAULT_AGENTS = [
         "description": "Flokk timeline surface.",
         "status": "online",
         "endpoint": "flokk",
+        "kind": "agent",
         "tags": ["ui", "timeline"],
     },
 ]
 
 
-def _utc_now() -> str:
-    return datetime.now(timezone.utc).isoformat()
+def _normalize_kind(value: Any) -> str:
+    return value if value in ("agent", "bot") else "agent"
 
 
-def _ensure_store() -> None:
-    if A2A_STORE_PATH.exists():
-        return
-    A2A_STORE_PATH.parent.mkdir(parents=True, exist_ok=True)
-    data = {"agents": DEFAULT_AGENTS, "messages": []}
-    A2A_STORE_PATH.write_text(json.dumps(data, indent=2), encoding="utf-8")
+def _serialize_agent(record: Dict[str, Any]) -> Dict[str, Any]:
+    value = serialize_record(record)
+    value["kind"] = _normalize_kind(value.get("kind"))
+    return value
 
 
-def _read_store() -> Dict[str, Any]:
-    _ensure_store()
-    raw = A2A_STORE_PATH.read_text(encoding="utf-8")
-    try:
-        data = json.loads(raw)
-    except json.JSONDecodeError:
-        data = {"agents": DEFAULT_AGENTS, "messages": []}
-    if "agents" not in data or not isinstance(data["agents"], list):
-        data["agents"] = DEFAULT_AGENTS
-    if "messages" not in data or not isinstance(data["messages"], list):
-        data["messages"] = []
-    return data
+def _serialize_message(record: Dict[str, Any]) -> Dict[str, Any]:
+    value = serialize_record(record)
+    value["from"] = value.pop("from_agent")
+    value["to"] = value.pop("to_agent")
+    return value
 
 
-def _write_store(data: Dict[str, Any]) -> None:
-    A2A_STORE_PATH.parent.mkdir(parents=True, exist_ok=True)
-    A2A_STORE_PATH.write_text(json.dumps(data, indent=2), encoding="utf-8")
+def _ensure_default_agents() -> None:
+    with write_connection() as conn:
+        existing_ids = {
+            row[0]
+            for row in conn.execute(select(a2a_agents.c.id).where(a2a_agents.c.id.in_([a["id"] for a in DEFAULT_AGENTS])))
+        }
+
+        for agent in DEFAULT_AGENTS:
+            if agent["id"] in existing_ids:
+                continue
+            conn.execute(
+                insert(a2a_agents).values(
+                    **agent,
+                    created_at=utc_now(),
+                )
+            )
 
 
 def list_agents() -> List[Dict[str, Any]]:
-    with A2A_STORE_LOCK:
-        return _read_store()["agents"]
+    _ensure_default_agents()
+    query = select(a2a_agents).order_by(a2a_agents.c.created_at.asc(), a2a_agents.c.id.asc())
+    with read_connection() as conn:
+        rows = conn.execute(query).fetchall()
+    return [_serialize_agent(row_to_dict(row)) for row in rows]
 
 
 def get_agent(agent_id: str) -> Optional[Dict[str, Any]]:
-    with A2A_STORE_LOCK:
-        for agent in _read_store()["agents"]:
-            if agent.get("id") == agent_id:
-                return agent
-    return None
+    _ensure_default_agents()
+    query = select(a2a_agents).where(a2a_agents.c.id == agent_id)
+    with read_connection() as conn:
+        row = conn.execute(query).fetchone()
+    if not row:
+        return None
+    return _serialize_agent(row_to_dict(row))
 
 
 def register_agent(payload: Dict[str, Any]) -> Dict[str, Any]:
@@ -88,46 +104,51 @@ def register_agent(payload: Dict[str, Any]) -> Dict[str, Any]:
         "description": payload.get("description", ""),
         "status": payload.get("status", "offline"),
         "endpoint": payload.get("endpoint", ""),
-        # Classification: "agent" (interactive, LLM-backed, autonomous) vs
-        # "bot" (deterministic function executor). Normalized so null or
-        # unknown values can never enter the registry.
-        "kind": payload.get("kind") if payload.get("kind") in ("agent", "bot") else "agent",
+        "kind": _normalize_kind(payload.get("kind")),
         "tags": payload.get("tags", []),
-        "created_at": _utc_now(),
     }
-    with A2A_STORE_LOCK:
-        data = _read_store()
-        for existing in data["agents"]:
-            if existing.get("id") == agent["id"]:
-                # Re-registration updates mutable fields so seeded records
-                # (e.g. x-agent without kind) don't stay stale forever.
-                for field in ("name", "description", "status", "endpoint", "kind", "tags"):
-                    existing[field] = agent[field]
-                _write_store(data)
-                return existing
-        data["agents"].append(agent)
-        _write_store(data)
-    return agent
+
+    with write_connection() as conn:
+        existing = conn.execute(
+            select(a2a_agents).where(a2a_agents.c.id == agent["id"])
+        ).fetchone()
+
+        if existing:
+            conn.execute(
+                update(a2a_agents)
+                .where(a2a_agents.c.id == agent["id"])
+                .values(**agent)
+            )
+            row = row_to_dict(existing)
+            row.update(agent)
+            return _serialize_agent(row)
+
+        created = {**agent, "created_at": utc_now()}
+        conn.execute(insert(a2a_agents).values(**created))
+        return _serialize_agent(created)
 
 
 def list_messages(agent_id: str) -> List[Dict[str, Any]]:
-    with A2A_STORE_LOCK:
-        data = _read_store()
-        return [msg for msg in data["messages"] if msg.get("to") == agent_id]
+    query = (
+        select(a2a_messages)
+        .where(a2a_messages.c.to_agent == agent_id)
+        .order_by(a2a_messages.c.created_at.desc())
+    )
+    with read_connection() as conn:
+        rows = conn.execute(query).fetchall()
+    return [_serialize_message(row_to_dict(row)) for row in rows]
 
 
 def add_message(payload: Dict[str, Any]) -> Dict[str, Any]:
     message = {
         "id": payload.get("id") or str(uuid.uuid4()),
-        "from": payload.get("from", "system"),
-        "to": payload.get("to", "timeline-ui"),
+        "from_agent": payload.get("from", "system"),
+        "to_agent": payload.get("to", "timeline-ui"),
         "type": payload.get("type", "info"),
         "content": payload.get("content", ""),
         "metadata": payload.get("metadata", {}),
-        "created_at": _utc_now(),
+        "created_at": utc_now(),
     }
-    with A2A_STORE_LOCK:
-        data = _read_store()
-        data["messages"].insert(0, message)
-        _write_store(data)
-    return message
+    with write_connection() as conn:
+        conn.execute(insert(a2a_messages).values(**message))
+    return _serialize_message(message)
