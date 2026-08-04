@@ -39,7 +39,7 @@ class GeneralAgent(TeamMember):
             f"{wrap_untrusted(mention.text)}"
         )
         if not reply:
-            reply = "Thinking..."
+            reply = "Sorry, I'm having trouble processing that. Try again or DM me."
         card = {
             "title": f"New mention {mention.mention_id or ''}".strip(),
             "body": mention.text,
