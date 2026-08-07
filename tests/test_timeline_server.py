@@ -238,3 +238,101 @@ def test_wrong_token_is_rejected(client, monkeypatch):
 def test_health_never_requires_a_token(client, monkeypatch):
     monkeypatch.setenv("TIMELINE_API_TOKEN", "s3cret")
     assert client.get("/health").status_code == 200
+
+
+# --- approval is single-shot ------------------------------------------------
+
+
+def _dispatch_count(client, item_id):
+    response = client.get("/v1/a2a/agents/mcp-orchestrator/messages")
+    return len(
+        [
+            m
+            for m in response.json()["messages"]
+            if m.get("metadata", {}).get("timeline_item_id") == item_id
+        ]
+    )
+
+
+def test_an_action_dispatches_once_however_many_times_it_is_sent(client):
+    """A card carries its action to a member exactly once.
+
+    Validating that the card offers the action is not enough: every repeat
+    passes that same check. Without a claim, a double-click or a retried
+    request executes the trade again.
+    """
+    item = _create(client, actions=[{"id": "approve", "label": "Approve"}])
+
+    first = client.patch(f"/v1/timeline/items/{item['id']}", json={"action_id": "approve"})
+    assert first.status_code == 200
+
+    for _ in range(5):
+        again = client.patch(f"/v1/timeline/items/{item['id']}", json={"action_id": "approve"})
+        assert again.status_code == 409
+        assert "already dispatched" in again.json()["detail"].lower()
+
+    assert _dispatch_count(client, item["id"]) == 1
+
+
+def test_a_second_different_action_cannot_be_dispatched_either(client):
+    """Approve-then-Reject is the same problem wearing a different label: the
+    card is terminal once any action has gone out, so the claim is per card,
+    not per action."""
+    item = _create(client, actions=[{"id": "approve", "label": "Approve"},
+                                    {"id": "reject", "label": "Reject"}])
+
+    assert client.patch(
+        f"/v1/timeline/items/{item['id']}", json={"action_id": "approve"}
+    ).status_code == 200
+    assert client.patch(
+        f"/v1/timeline/items/{item['id']}", json={"action_id": "reject"}
+    ).status_code == 409
+
+    assert _dispatch_count(client, item["id"]) == 1
+
+
+def test_the_legacy_label_path_is_claimed_too(client):
+    """The bare `action` label path reaches the same dispatch, so it must go
+    through the same claim -- otherwise the guard is trivially bypassed."""
+    item = _create(client, actions=["Approve", "Reject"])
+
+    assert client.patch(
+        f"/v1/timeline/items/{item['id']}", json={"action": "Approve"}
+    ).status_code == 200
+    assert client.patch(
+        f"/v1/timeline/items/{item['id']}", json={"action": "Approve"}
+    ).status_code == 409
+
+    assert _dispatch_count(client, item["id"]) == 1
+
+
+def test_a_rejected_action_never_claims_the_card(client):
+    """A 400 must leave the card approvable. Claiming on a refused action
+    would let anyone burn a card by sending an action it never offered."""
+    item = _create(client, actions=[{"id": "approve", "label": "Approve"}])
+
+    assert client.patch(
+        f"/v1/timeline/items/{item['id']}", json={"action_id": "nope"}
+    ).status_code == 400
+    assert client.patch(
+        f"/v1/timeline/items/{item['id']}", json={"action": "Not Offered"}
+    ).status_code == 400
+
+    # Still approvable afterwards.
+    assert client.patch(
+        f"/v1/timeline/items/{item['id']}", json={"action_id": "approve"}
+    ).status_code == 200
+    assert _dispatch_count(client, item["id"]) == 1
+
+
+def test_a_non_action_patch_is_unaffected(client):
+    """Editing a card must not consume its one dispatch."""
+    item = _create(client, actions=[{"id": "approve", "label": "Approve"}])
+
+    assert client.patch(
+        f"/v1/timeline/items/{item['id']}", json={"status": "read"}
+    ).status_code == 200
+    assert client.patch(
+        f"/v1/timeline/items/{item['id']}", json={"action_id": "approve"}
+    ).status_code == 200
+    assert _dispatch_count(client, item["id"]) == 1

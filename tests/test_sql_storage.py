@@ -12,6 +12,13 @@ import timeline_store
 from scripts.migrate_json_to_sql import migrate
 from storage_db import get_engine, metadata, normalize_database_url, reset_engine_for_tests
 
+# Every column added to timeline_items after #125 shipped the SQL layer. These
+# are what a database created by that revision is missing, so they define both
+# the "legacy" table the upgrade tests build and what the upgrade must add.
+# Keep in step with storage_db.timeline_items -- a column added there and not
+# here silently stops being covered.
+COLUMNS_ADDED_SINCE_THE_SQL_LAYER_LANDED = {"blocks", "schema_version", "dispatched_action"}
+
 
 @pytest.fixture()
 def db_url(tmp_path, monkeypatch):
@@ -245,7 +252,7 @@ def test_a_database_predating_the_card_columns_is_upgraded_in_place(tmp_path, mo
         *[
             Column(c.name, c.type, primary_key=c.primary_key, nullable=c.nullable)
             for c in timeline_items.columns
-            if c.name not in ("blocks", "schema_version")
+            if c.name not in COLUMNS_ADDED_SINCE_THE_SQL_LAYER_LANDED
         ],
     )
 
@@ -273,7 +280,7 @@ def test_a_database_predating_the_card_columns_is_upgraded_in_place(tmp_path, mo
     reset_engine_for_tests()
 
     columns = {c["name"] for c in inspect(get_engine()).get_columns(timeline_items.name)}
-    assert {"blocks", "schema_version"} <= columns
+    assert COLUMNS_ADDED_SINCE_THE_SQL_LAYER_LANDED <= columns
 
     # The row written before the columns existed still reads, and upgrades to
     # typed content rather than erroring on the newly added NOT NULL columns.
@@ -300,7 +307,7 @@ def _make_legacy_table(url):
         *[
             Column(c.name, c.type, primary_key=c.primary_key, nullable=c.nullable)
             for c in timeline_items.columns
-            if c.name not in ("blocks", "schema_version")
+            if c.name not in COLUMNS_ADDED_SINCE_THE_SQL_LAYER_LANDED
         ],
     )
     legacy.drop_all(engine)
@@ -347,7 +354,7 @@ def test_concurrent_startups_do_not_collide_on_the_column_upgrade(tmp_path, monk
     assert errors == [], f"a concurrent startup failed: {errors[0]!r}"
 
     columns = {c["name"] for c in inspect(engines[0]).get_columns(timeline_items.name)}
-    assert {"blocks", "schema_version"} <= columns
+    assert COLUMNS_ADDED_SINCE_THE_SQL_LAYER_LANDED <= columns
     for engine in engines:
         engine.dispose()
 

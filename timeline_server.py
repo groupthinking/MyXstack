@@ -10,7 +10,15 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from a2a_store import add_message, get_agent, list_agents, list_messages, register_agent
 from cards import Block, CardAction, DuplicateActionIdError, normalize_actions, resolve_action
-from timeline_store import add_item, delete_item, get_item, list_items, update_item
+from timeline_store import (
+    add_item,
+    claim_action,
+    delete_item,
+    get_item,
+    list_items,
+    release_action_claim,
+    update_item,
+)
 
 app = FastAPI(title="xMCP Timeline Service")
 
@@ -228,14 +236,37 @@ def patch_item(item_id: str, updates: TimelineItemUpdate) -> Dict[str, Any]:
 
         data["action"] = action
 
+        # Claim before anything is written or dispatched. Validating that the
+        # card offers the action does not make approval single-shot -- every
+        # concurrent caller passes that same check -- so without this a
+        # double-click, two surfaces, or a retried request each dispatch the
+        # action again, and the member executes the trade once per request.
+        if not claim_action(item_id, action):
+            current = get_item(item_id) or {}
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    f"Card already dispatched "
+                    f"'{current.get('dispatched_action') or 'an action'}'"
+                ),
+            )
+
     if action and not updates.status:
         data["status"] = action.lower()
 
     item = update_item(item_id, data)
     if not item:
+        if action:
+            release_action_claim(item_id)
         raise HTTPException(status_code=404, detail="Item not found")
     if action:
-        _dispatch_action(item, action)
+        try:
+            _dispatch_action(item, action)
+        except Exception:
+            # The claim exists to stop a second dispatch, not to make a card
+            # that never dispatched permanently unapprovable.
+            release_action_claim(item_id)
+            raise
     return item
 
 

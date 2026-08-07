@@ -113,3 +113,44 @@ def delete_item(item_id: str) -> bool:
     with write_connection() as conn:
         result = conn.execute(delete(timeline_items).where(timeline_items.c.id == item_id))
         return result.rowcount > 0
+
+
+def claim_action(item_id: str, action: str) -> bool:
+    """Claim this card's one dispatch, atomically. True only for the winner.
+
+    Approval is single-shot: a card carries an action to a member exactly
+    once, or a human double-clicking -- or two surfaces, or a retried
+    request -- executes the same trade more than once. Validating that the
+    card *offers* an action does not give that, because every concurrent
+    caller passes the same validation.
+
+    The guarantee comes from the database rather than from a check in the
+    handler: a single UPDATE ... WHERE dispatched_action = '' can only
+    succeed for one caller, whatever the interleaving, and it holds across
+    processes -- which matters because several timeline-server replicas may
+    serve the same card.
+    """
+    with write_connection() as conn:
+        result = conn.execute(
+            update(timeline_items)
+            .where(timeline_items.c.id == item_id)
+            .where(timeline_items.c.dispatched_action == "")
+            .values(dispatched_action=action, updated_at=utc_now())
+        )
+        return result.rowcount == 1
+
+
+def release_action_claim(item_id: str) -> None:
+    """Undo a claim whose dispatch never happened.
+
+    Dispatch can fail after the claim is taken (the A2A write throws). Left
+    alone, that card would be permanently unapprovable -- terminal without
+    anything having run. Releasing keeps a failed approval retryable, which
+    is the same rule the dispatcher already follows for failed execution.
+    """
+    with write_connection() as conn:
+        conn.execute(
+            update(timeline_items)
+            .where(timeline_items.c.id == item_id)
+            .values(dispatched_action="")
+        )

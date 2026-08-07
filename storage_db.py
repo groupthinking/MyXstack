@@ -50,6 +50,10 @@ timeline_items = Table(
     # that predates typed cards keeps working.
     Column("blocks", json_type, nullable=False, default=list),
     Column("schema_version", String, nullable=False, default=""),
+    # The action this card has already dispatched, or "" while unclaimed. A
+    # conditional UPDATE against this column is what makes approval
+    # single-shot; see timeline_store.claim_action.
+    Column("dispatched_action", String, nullable=False, default=""),
     Column("status", String, nullable=False, index=True),
     Column("posted_by", String, nullable=False),
     Column("actions", json_type, nullable=False),
