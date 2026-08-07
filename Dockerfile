@@ -9,7 +9,10 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY *.py .
 COPY openapi.json .
+# listener.py and mcp_dispatcher.py import agents.*; scripts/ holds the
+# JSON->SQL migration documented in README.md and docs/DEPLOYMENT.md.
 COPY agents/ ./agents/
+COPY scripts/ ./scripts/
 # Approval surface served by timeline_server at /ui
 COPY ui/ ./ui/
 

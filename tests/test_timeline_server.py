@@ -1,30 +1,37 @@
 """Timeline API behaviour: auth, typed cards, and action resolution.
 
-Each test points the stores at a fresh tmp_path and reloads the modules so
-that module-level store paths pick the new location up.
+Each test points the store at a throwaway database and rebuilds the schema, so
+nothing leaks between tests or into a developer's real `~/.xmcp/xmcp.db`.
 """
 
 import importlib
+import os
 
 import pytest
 from fastapi.testclient import TestClient
 
+from storage_db import get_engine, metadata, reset_engine_for_tests
+
 
 @pytest.fixture
 def client(tmp_path, monkeypatch):
-    monkeypatch.setenv("TIMELINE_STORE_PATH", str(tmp_path / "timeline.json"))
-    monkeypatch.setenv("A2A_STORE_PATH", str(tmp_path / "a2a.json"))
+    url = os.getenv("TEST_DATABASE_URL") or f"sqlite:///{tmp_path / 'xmcp.db'}"
+    monkeypatch.setenv("DATABASE_URL", url)
     monkeypatch.delenv("TIMELINE_API_TOKEN", raising=False)
     monkeypatch.delenv("TIMELINE_CORS_ORIGINS", raising=False)
+    reset_engine_for_tests()
 
-    import a2a_store
+    # A shared Postgres persists across tests; start each one from a clean
+    # schema so ids and dispatched-action assertions stay independent.
+    engine = get_engine()
+    metadata.drop_all(engine)
+    metadata.create_all(engine)
+
     import timeline_server
-    import timeline_store
 
-    importlib.reload(a2a_store)
-    importlib.reload(timeline_store)
     importlib.reload(timeline_server)
-    return TestClient(timeline_server.app)
+    yield TestClient(timeline_server.app)
+    reset_engine_for_tests()
 
 
 def _create(client, **overrides):

@@ -205,7 +205,9 @@ card = build_card(
 
 **Backward compatibility.** `body` is still populated — derived from `blocks`
 when not supplied — so anything reading it keeps working. Cards written before
-typed blocks are upgraded in memory on read; there is no on-disk migration.
+typed blocks are upgraded in memory on read, so no card-level rewrite is needed.
+(That is separate from `scripts/migrate_json_to_sql.py`, which is a one-time
+move of the old JSON stores into SQL.)
 
 ## OpenAPI Filtering
 
@@ -252,13 +254,24 @@ Wire the cross-service URLs after deployment:
 ```
 MCP_SERVER_URL=https://<mcp-server>.up.railway.app/mcp
 TIMELINE_API_URL=https://<timeline-server>.up.railway.app
+# All four services must share one database:
+DATABASE_URL=postgres://<user>:<pass>@<host>:<port>/<db>
 ```
 
 See `docs/DEPLOYMENT.md` for full Railway setup details.
 
 ## Data Storage
 
-Timeline cards and A2A messages are stored in JSON files at `~/.xmcp/` by default. This is intentional for lightweight local use. For production, override `TIMELINE_STORE_PATH` and `A2A_STORE_PATH` to point to a persistent volume.
+Timeline cards and A2A messages are stored in SQL and selected by `DATABASE_URL`:
+
+- `DATABASE_URL` unset (or `sqlite://...`) → SQLite (`~/.xmcp/xmcp.db` by default)
+- `postgres://...` or `postgresql://...` → Postgres (Railway-ready; `postgres://` is normalized automatically)
+
+Tables are created automatically on startup. For local concurrency safety, SQLite enables WAL mode and a busy timeout. To migrate legacy JSON stores (`TIMELINE_STORE_PATH`, `A2A_STORE_PATH`), run:
+
+```bash
+python scripts/migrate_json_to_sql.py
+```
 
 ## Project Structure
 
@@ -268,9 +281,11 @@ Timeline cards and A2A messages are stored in JSON files at `~/.xmcp/` by defaul
 ├── listener.py            # X mention poller + Grok responder
 ├── mcp_dispatcher.py      # Timeline action executor
 ├── cards.py               # Typed card schema (blocks, actions, legacy upgrade)
-├── timeline_store.py      # JSON-file timeline persistence
-├── a2a_store.py           # JSON-file A2A persistence
-├── store_lock.py          # Cross-process file locking for the JSON stores
+├── timeline_store.py      # SQL-backed timeline persistence
+├── a2a_store.py           # SQL-backed A2A persistence
+├── storage_db.py          # Shared SQLAlchemy engine/schema
+├── store_lock.py          # Cross-process file locking for the paper-trade ledger
+├── scripts/migrate_json_to_sql.py
 ├── ui/                    # Approval surface served at /ui (no build step)
 ├── openapi.json           # X API OpenAPI spec (used by MCP server)
 ├── src/                   # TypeScript standalone agent (alternative)

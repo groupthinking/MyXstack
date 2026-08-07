@@ -1,75 +1,64 @@
-"""Storage-level guarantees: cross-process safety and legacy readability."""
+"""Card-level guarantees of the timeline store, against the SQL backend.
 
-import importlib
-import json
-import multiprocessing
+Storage mechanics (engine setup, concurrency, URL normalization) live in
+tests/test_sql_storage.py. What matters here is that typed card content
+survives a round trip and that a record written before typed cards existed is
+still readable.
+"""
+
 import os
+from datetime import datetime, timezone
 
 import pytest
 
+import timeline_store
+from storage_db import get_engine, metadata, reset_engine_for_tests, timeline_items
 
-@pytest.fixture
+
+@pytest.fixture()
 def store(tmp_path, monkeypatch):
-    monkeypatch.setenv("TIMELINE_STORE_PATH", str(tmp_path / "timeline.json"))
-    import timeline_store
+    url = os.getenv("TEST_DATABASE_URL") or f"sqlite:///{tmp_path / 'xmcp.db'}"
+    monkeypatch.setenv("DATABASE_URL", url)
+    reset_engine_for_tests()
 
-    importlib.reload(timeline_store)
-    return timeline_store
+    engine = get_engine()
+    metadata.drop_all(engine)
+    metadata.create_all(engine)
 
-
-def _writer(store_path: str, count: int, tag: str) -> None:
-    """Runs in a separate process: reload the module so it binds the shared
-    store path, then append cards."""
-    os.environ["TIMELINE_STORE_PATH"] = store_path
-    import timeline_store
-
-    importlib.reload(timeline_store)
-    for i in range(count):
-        timeline_store.add_item({"title": f"{tag}-{i}", "body": "x"})
+    yield timeline_store
+    reset_engine_for_tests()
 
 
-def test_concurrent_processes_do_not_lose_items(tmp_path):
-    store_path = str(tmp_path / "timeline.json")
-    per_writer = 25
-    writers = 4
+def test_typed_blocks_survive_a_round_trip(store):
+    blocks = [{"type": "facts", "label": "Order", "facts": [{"key": "Side", "value": "BUY"}]}]
+    item = store.add_item({"title": "Trade proposal", "blocks": blocks})
 
-    ctx = multiprocessing.get_context("spawn")
-    procs = [
-        ctx.Process(target=_writer, args=(store_path, per_writer, f"w{n}"))
-        for n in range(writers)
-    ]
-    for proc in procs:
-        proc.start()
-    for proc in procs:
-        proc.join(timeout=60)
-        assert proc.exitcode == 0
-
-    data = json.loads(open(store_path, encoding="utf-8").read())
-    assert len(data["items"]) == per_writer * writers
-    # Every writer's cards survived, not just the last one to win a race.
-    titles = {item["title"] for item in data["items"]}
-    assert len(titles) == per_writer * writers
+    fetched = store.get_item(item["id"])
+    assert fetched["blocks"] == blocks
+    # The text form is derived so a reader that predates blocks still works.
+    assert "Side: BUY" in fetched["body"]
 
 
-def test_legacy_records_on_disk_are_still_readable(store, tmp_path):
-    # Simulate a store written before typed cards existed.
-    legacy = {
-        "items": [
-            {
-                "id": "old-1",
-                "user_id": "default",
-                "title": "Legacy card",
-                "body": "BUY 10 $TSLA",
-                "status": "unread",
-                "posted_by": "tradedesk",
-                "actions": ["Approve", "Reject"],
-                "metadata": {"agent_id": "tradedesk"},
-                "created_at": "2024-01-01T00:00:00+00:00",
-                "updated_at": None,
-            }
-        ]
-    }
-    (tmp_path / "timeline.json").write_text(json.dumps(legacy), encoding="utf-8")
+def test_legacy_records_are_upgraded_on_read(store):
+    # A row as the JSON->SQL migration would leave it: a body, string actions,
+    # and no blocks at all.
+    with get_engine().begin() as conn:
+        conn.execute(
+            timeline_items.insert().values(
+                id="old-1",
+                user_id="default",
+                title="Legacy card",
+                body="BUY 10 $TSLA",
+                blocks=[],
+                schema_version="",
+                status="unread",
+                posted_by="tradedesk",
+                actions=["Approve", "Reject"],
+                metadata={"agent_id": "tradedesk"},
+                created_at=datetime(2024, 1, 1, tzinfo=timezone.utc),
+                updated_at=None,
+            )
+        )
 
     item = store.get_item("old-1")
     assert item["blocks"] == [{"type": "text", "label": None, "text": "BUY 10 $TSLA"}]
@@ -87,6 +76,25 @@ def test_updating_blocks_keeps_the_derived_body_in_step(store):
 
     updated = store.update_item(item["id"], {"blocks": [{"type": "text", "text": "after"}]})
     assert updated["body"] == "after"
+
+
+def test_an_explicit_body_wins_over_the_derived_one(store):
+    item = store.add_item(
+        {"title": "t", "body": "explicit", "blocks": [{"type": "text", "text": "derived"}]}
+    )
+    assert item["body"] == "explicit"
+
+    updated = store.update_item(
+        item["id"], {"body": "still explicit", "blocks": [{"type": "text", "text": "new"}]}
+    )
+    assert updated["body"] == "still explicit"
+
+
+def test_string_actions_are_normalized_on_write(store):
+    item = store.add_item({"title": "t", "body": "b", "actions": ["Approve Purchase"]})
+    assert item["actions"] == [
+        {"id": "approve-purchase", "label": "Approve Purchase", "style": "neutral", "confirm": None}
+    ]
 
 
 def test_metadata_updates_merge_rather_than_replace(store):

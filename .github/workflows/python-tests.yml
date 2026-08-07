@@ -1,13 +1,8 @@
-name: "🐍 Python Tests"
+name: Python Tests
 
-# A gate that can actually fail.
-#
-# agent-ci.yml's auto-detect job never runs this suite: it checks for
-# package.json before the Python branch, and MyXstack has one (the TypeScript
-# agent in src/), so it classifies this repo as "node". Its Python step is
-# also `pytest ... 2>/dev/null || true` under continue-on-error, so it could
-# not fail even if it were reached. This job exists to close that gap and is
-# deliberately free of `|| true`, `2>/dev/null`, and continue-on-error.
+# agent-ci.yml detects the framework from package.json first, so this repo
+# resolves to "node" and its Python step never runs. This workflow runs the
+# pytest suite directly, with no continue-on-error, so a red suite fails the PR.
 
 on:
   pull_request:
@@ -15,22 +10,57 @@ on:
     branches: [main]
 
 jobs:
-  pytest:
-    name: pytest
+  sqlite:
+    name: pytest (sqlite)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
-          # Matches the Dockerfile (python:3.12-slim), which is what ships.
           python-version: '3.12'
           cache: pip
 
       - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install -r requirements.txt -r requirements-dev.txt
+        run: pip install -r requirements-dev.txt
 
       - name: Run tests
-        run: pytest -q
+        run: pytest --tb=short -q
+
+  postgres:
+    name: pytest (postgres)
+    runs-on: ubuntu-latest
+    # SQLite's BEGIN IMMEDIATE serializes writers, which hides lost-update bugs
+    # that only surface under Postgres' READ COMMITTED. Postgres is the
+    # production backend on Railway, so the suite has to run against it too.
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_DB: xmcp
+          POSTGRES_USER: xmcp
+          POSTGRES_PASSWORD: xmcp
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U xmcp -d xmcp"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements-dev.txt
+
+      - name: Run tests
+        # Deliberately the legacy postgres:// scheme Railway injects, so URL
+        # normalization is exercised end to end rather than only as a string.
+        env:
+          TEST_DATABASE_URL: postgres://xmcp:xmcp@localhost:5432/xmcp
+        run: pytest --tb=short -q

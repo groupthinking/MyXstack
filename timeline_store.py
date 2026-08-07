@@ -1,63 +1,38 @@
-import json
-import os
 import uuid
-from datetime import datetime, timezone
-from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from sqlalchemy import delete, insert, select, update
+
 from cards import SCHEMA_VERSION, derive_body, normalize_actions, normalize_card
-from store_lock import file_lock
-
-STORE_PATH = Path(os.getenv("TIMELINE_STORE_PATH", "~/.xmcp/timeline_store.json")).expanduser()
-
-
-def _utc_now() -> str:
-    return datetime.now(timezone.utc).isoformat()
-
-
-def _ensure_store() -> None:
-    if STORE_PATH.exists():
-        return
-    STORE_PATH.parent.mkdir(parents=True, exist_ok=True)
-    STORE_PATH.write_text(json.dumps({"items": []}, indent=2), encoding="utf-8")
-
-
-def _read_store() -> Dict[str, Any]:
-    _ensure_store()
-    raw = STORE_PATH.read_text(encoding="utf-8")
-    try:
-        data = json.loads(raw)
-    except json.JSONDecodeError:
-        data = {"items": []}
-    if "items" not in data or not isinstance(data["items"], list):
-        data["items"] = []
-    return data
-
-
-def _write_store(data: Dict[str, Any]) -> None:
-    """Atomic replace so a mid-write crash can't truncate the timeline."""
-    STORE_PATH.parent.mkdir(parents=True, exist_ok=True)
-    tmp = STORE_PATH.with_suffix(STORE_PATH.suffix + ".tmp")
-    tmp.write_text(json.dumps(data, indent=2), encoding="utf-8")
-    os.replace(tmp, STORE_PATH)
+from storage_db import (
+    merge_json,
+    row_to_dict,
+    serialize_record,
+    timeline_items,
+    utc_now,
+    write_connection,
+    read_connection,
+)
 
 
 def list_items(user_id: str, status: Optional[str] = None) -> List[Dict[str, Any]]:
-    with file_lock(STORE_PATH):
-        data = _read_store()
-        items = [item for item in data["items"] if item.get("user_id") == user_id]
-        if status:
-            items = [item for item in items if item.get("status") == status]
-        return [normalize_card(item) for item in items]
+    query = select(timeline_items).where(timeline_items.c.user_id == user_id)
+    if status:
+        query = query.where(timeline_items.c.status == status)
+    query = query.order_by(timeline_items.c.created_at.desc())
+
+    with read_connection() as conn:
+        rows = conn.execute(query).fetchall()
+    return [normalize_card(serialize_record(row_to_dict(row))) for row in rows]
 
 
 def get_item(item_id: str) -> Optional[Dict[str, Any]]:
-    with file_lock(STORE_PATH):
-        data = _read_store()
-        for item in data["items"]:
-            if item.get("id") == item_id:
-                return normalize_card(item)
-    return None
+    query = select(timeline_items).where(timeline_items.c.id == item_id)
+    with read_connection() as conn:
+        row = conn.execute(query).fetchone()
+    if not row:
+        return None
+    return normalize_card(serialize_record(row_to_dict(row)))
 
 
 def add_item(payload: Dict[str, Any]) -> Dict[str, Any]:
@@ -79,48 +54,62 @@ def add_item(payload: Dict[str, Any]) -> Dict[str, Any]:
         "posted_by": payload.get("posted_by", "agent"),
         "actions": normalize_actions(payload.get("actions")),
         "metadata": payload.get("metadata", {}),
-        "created_at": _utc_now(),
+        "created_at": utc_now(),
         "updated_at": None,
     }
 
-    with file_lock(STORE_PATH):
-        data = _read_store()
-        data["items"].insert(0, item)
-        _write_store(data)
-    return normalize_card(item)
+    with write_connection() as conn:
+        conn.execute(insert(timeline_items).values(**item))
+    return normalize_card(serialize_record(item))
 
 
 def update_item(item_id: str, updates: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-    with file_lock(STORE_PATH):
-        data = _read_store()
-        for item in data["items"]:
-            if item.get("id") != item_id:
-                continue
-            for key in ["status", "posted_by", "title", "body"]:
-                if key in updates and updates[key] is not None:
-                    item[key] = updates[key]
-            if "metadata" in updates and isinstance(updates["metadata"], dict):
-                item["metadata"] = {**item.get("metadata", {}), **updates["metadata"]}
-            if "actions" in updates and isinstance(updates["actions"], list):
-                item["actions"] = normalize_actions(updates["actions"])
-            if "blocks" in updates and isinstance(updates["blocks"], list):
-                item["blocks"] = updates["blocks"]
-                # Keep the derived text form in step with the blocks unless
-                # the caller overrode `body` in the same update.
-                if "body" not in updates or updates["body"] is None:
-                    item["body"] = derive_body(updates["blocks"])
-            item["updated_at"] = _utc_now()
-            _write_store(data)
-            return normalize_card(item)
-    return None
+    with write_connection() as conn:
+        # with_for_update() locks the row for the life of the transaction, so the
+        # read-merge-write below stays atomic. Without it, Postgres runs this at
+        # READ COMMITTED and two callers merging different metadata keys can read
+        # the same base dict and clobber each other -- the approval/action path
+        # this store backs must not lose updates. SQLite has no row locks and
+        # SQLAlchemy renders nothing there; write_connection()'s BEGIN IMMEDIATE
+        # already serializes SQLite writers.
+        row = conn.execute(
+            select(timeline_items).where(timeline_items.c.id == item_id).with_for_update()
+        ).fetchone()
+        if not row:
+            return None
+
+        current = row_to_dict(row)
+        changed: Dict[str, Any] = {}
+
+        for key in ["status", "posted_by", "title", "body"]:
+            if key in updates and updates[key] is not None:
+                changed[key] = updates[key]
+
+        if "metadata" in updates and isinstance(updates["metadata"], dict):
+            changed["metadata"] = merge_json(current.get("metadata"), updates["metadata"])
+
+        if "actions" in updates and isinstance(updates["actions"], list):
+            changed["actions"] = normalize_actions(updates["actions"])
+
+        if "blocks" in updates and isinstance(updates["blocks"], list):
+            changed["blocks"] = updates["blocks"]
+            # Keep the derived text form in step with the blocks unless the
+            # caller overrode `body` in the same update.
+            if updates.get("body") is None:
+                changed["body"] = derive_body(updates["blocks"])
+
+        changed["updated_at"] = utc_now()
+        conn.execute(
+            update(timeline_items)
+            .where(timeline_items.c.id == item_id)
+            .values(**changed)
+        )
+        current.update(changed)
+
+        return normalize_card(serialize_record(current))
 
 
 def delete_item(item_id: str) -> bool:
-    with file_lock(STORE_PATH):
-        data = _read_store()
-        original = len(data["items"])
-        data["items"] = [item for item in data["items"] if item.get("id") != item_id]
-        if len(data["items"]) == original:
-            return False
-        _write_store(data)
-        return True
+    with write_connection() as conn:
+        result = conn.execute(delete(timeline_items).where(timeline_items.c.id == item_id))
+        return result.rowcount > 0

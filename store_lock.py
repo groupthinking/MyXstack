@@ -1,10 +1,14 @@
 """Cross-process advisory file locking for the JSON-file stores.
 
-The timeline, A2A, and paper-trade stores are plain JSON files written by
-four separate processes (server, timeline server, listener, dispatcher).
-A `threading.Lock` only serializes writers inside one interpreter, so a
+The paper-trade ledger is a plain JSON file that any of the four processes
+(server, timeline server, listener, dispatcher) may write. A
+`threading.Lock` only serializes writers inside one interpreter, so a
 read-modify-write can still lose updates across processes. `file_lock`
 closes that gap with an `flock` on a sibling `.lock` file.
+
+The timeline and A2A stores no longer need this — they moved to SQL, where
+`write_connection()` gets the same guarantee from the database (BEGIN
+IMMEDIATE on SQLite, `SELECT ... FOR UPDATE` on Postgres).
 
 Callers must hold the lock across the *whole* read-modify-write, not just
 the write, or the race is merely narrowed rather than closed.
