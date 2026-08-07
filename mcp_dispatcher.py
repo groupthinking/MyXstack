@@ -10,6 +10,7 @@ from xai_sdk import Client
 from xai_sdk.chat import user
 from xai_sdk.tools import mcp
 
+from agents.base import timeline_headers
 from agents.registry import find_member
 
 LAST_SEEN_PATH = Path(os.getenv("XMCP_DISPATCH_LAST_SEEN", "~/.xmcp/dispatch_last_seen.txt")).expanduser()
@@ -35,7 +36,11 @@ def load_last_seen() -> Optional[str]:
 def get_timeline_item(item_id: str) -> Optional[Dict]:
     timeline_url = os.getenv("TIMELINE_API_URL", "http://127.0.0.1:8080")
     try:
-        response = requests.get(f"{timeline_url}/v1/timeline/items/{item_id}", timeout=10)
+        response = requests.get(
+            f"{timeline_url}/v1/timeline/items/{item_id}",
+            headers=timeline_headers(),
+            timeout=10,
+        )
         if response.status_code != 200:
             return None
         return response.json()
@@ -46,7 +51,11 @@ def get_timeline_item(item_id: str) -> Optional[Dict]:
 
 def get_messages(agent_id: str) -> list[Dict]:
     timeline_url = os.getenv("TIMELINE_API_URL", "http://127.0.0.1:8080")
-    response = requests.get(f"{timeline_url}/v1/a2a/agents/{agent_id}/messages", timeout=10)
+    response = requests.get(
+        f"{timeline_url}/v1/a2a/agents/{agent_id}/messages",
+        headers=timeline_headers(),
+        timeout=10,
+    )
     if response.status_code != 200:
         return []
     payload = response.json()
@@ -64,6 +73,7 @@ def send_message(from_agent: str, to: str, content: str, metadata: Dict) -> None
             "content": content,
             "metadata": metadata,
         },
+        headers=timeline_headers(),
         timeout=10,
     )
 
@@ -78,7 +88,12 @@ def ensure_agent_registered(agent_id: str) -> None:
         "endpoint": "local",
         "tags": ["mcp", "orchestrator"],
     }
-    requests.post(f"{timeline_url}/v1/a2a/agents", json=payload, timeout=10)
+    requests.post(
+        f"{timeline_url}/v1/a2a/agents",
+        json=payload,
+        headers=timeline_headers(),
+        timeout=10,
+    )
 
 
 def update_timeline_item(item_id: str, metadata: Dict) -> None:
@@ -86,6 +101,7 @@ def update_timeline_item(item_id: str, metadata: Dict) -> None:
     requests.patch(
         f"{timeline_url}/v1/timeline/items/{item_id}",
         json={"metadata": metadata},
+        headers=timeline_headers(),
         timeout=10,
     )
 

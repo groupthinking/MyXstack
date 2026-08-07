@@ -2,7 +2,9 @@ import uuid
 from typing import Any, Dict, List, Optional
 
 from sqlalchemy import delete, insert, select, update
+from sqlalchemy.engine import Connection
 
+from cards import SCHEMA_VERSION, derive_body, normalize_actions, normalize_card
 from storage_db import (
     merge_json,
     row_to_dict,
@@ -22,7 +24,7 @@ def list_items(user_id: str, status: Optional[str] = None) -> List[Dict[str, Any
 
     with read_connection() as conn:
         rows = conn.execute(query).fetchall()
-    return [serialize_record(row_to_dict(row)) for row in rows]
+    return [normalize_card(serialize_record(row_to_dict(row))) for row in rows]
 
 
 def get_item(item_id: str) -> Optional[Dict[str, Any]]:
@@ -31,18 +33,31 @@ def get_item(item_id: str) -> Optional[Dict[str, Any]]:
         row = conn.execute(query).fetchone()
     if not row:
         return None
-    return serialize_record(row_to_dict(row))
+    return normalize_card(serialize_record(row_to_dict(row)))
 
 
 def add_item(payload: Dict[str, Any]) -> Dict[str, Any]:
+    blocks = payload.get("blocks") or []
+    # `body` stays authoritative for every older reader, so derive it from
+    # blocks when the caller didn't supply one itself.
+    body = payload.get("body") or ""
+    if blocks and not body:
+        body = derive_body(blocks)
+
     item = {
         "id": payload.get("id") or str(uuid.uuid4()),
         "user_id": payload.get("user_id", "default"),
         "title": payload.get("title", "Untitled"),
-        "body": payload.get("body", ""),
+        "body": body,
+        "blocks": blocks,
+        "schema_version": payload.get("schema_version") or SCHEMA_VERSION,
+        # Always present, so a surface can read it uniformly instead of having
+        # to treat "missing" and "unclaimed" as the same thing. A new card has
+        # dispatched nothing; only claim_action sets this.
+        "dispatched_action": "",
         "status": payload.get("status", "unread"),
         "posted_by": payload.get("posted_by", "agent"),
-        "actions": payload.get("actions", []),
+        "actions": normalize_actions(payload.get("actions")),
         "metadata": payload.get("metadata", {}),
         "created_at": utc_now(),
         "updated_at": None,
@@ -50,7 +65,7 @@ def add_item(payload: Dict[str, Any]) -> Dict[str, Any]:
 
     with write_connection() as conn:
         conn.execute(insert(timeline_items).values(**item))
-    return serialize_record(item)
+    return normalize_card(serialize_record(item))
 
 
 def update_item(item_id: str, updates: Dict[str, Any]) -> Optional[Dict[str, Any]]:
@@ -79,7 +94,14 @@ def update_item(item_id: str, updates: Dict[str, Any]) -> Optional[Dict[str, Any
             changed["metadata"] = merge_json(current.get("metadata"), updates["metadata"])
 
         if "actions" in updates and isinstance(updates["actions"], list):
-            changed["actions"] = updates["actions"]
+            changed["actions"] = normalize_actions(updates["actions"])
+
+        if "blocks" in updates and isinstance(updates["blocks"], list):
+            changed["blocks"] = updates["blocks"]
+            # Keep the derived text form in step with the blocks unless the
+            # caller overrode `body` in the same update.
+            if updates.get("body") is None:
+                changed["body"] = derive_body(updates["blocks"])
 
         changed["updated_at"] = utc_now()
         conn.execute(
@@ -89,10 +111,44 @@ def update_item(item_id: str, updates: Dict[str, Any]) -> Optional[Dict[str, Any
         )
         current.update(changed)
 
-        return serialize_record(current)
+        return normalize_card(serialize_record(current))
 
 
 def delete_item(item_id: str) -> bool:
     with write_connection() as conn:
         result = conn.execute(delete(timeline_items).where(timeline_items.c.id == item_id))
         return result.rowcount > 0
+
+
+def claim_action(item_id: str, action: str, *, conn: Optional[Connection] = None) -> bool:
+    """Claim this card's one dispatch, atomically. True only for the winner.
+
+    Approval is single-shot: a card carries an action to a member exactly
+    once, or a human double-clicking -- or two surfaces, or a retried
+    request -- executes the same trade more than once. Validating that the
+    card *offers* an action does not give that, because every concurrent
+    caller passes the same validation.
+
+    The guarantee comes from the database rather than from a check in the
+    handler: a single UPDATE ... WHERE dispatched_action = '' can only
+    succeed for one caller, whatever the interleaving, and it holds across
+    processes -- which matters because several timeline-server replicas may
+    serve the same card.
+
+    Pass `conn` to run inside a caller's transaction. The approval path does,
+    so the claim and the dispatch it authorises commit together. Claiming in
+    its own transaction would mean a process killed in the gap -- SIGKILL, an
+    OOM, a container rolling -- leaves a card claimed with nothing dispatched:
+    terminal, unrecoverable, and silent, which is worse than the duplicate
+    dispatch the claim exists to prevent.
+    """
+    statement = (
+        update(timeline_items)
+        .where(timeline_items.c.id == item_id)
+        .where(timeline_items.c.dispatched_action == "")
+        .values(dispatched_action=action, updated_at=utc_now())
+    )
+    if conn is not None:
+        return conn.execute(statement).rowcount == 1
+    with write_connection() as own_conn:
+        return own_conn.execute(statement).rowcount == 1

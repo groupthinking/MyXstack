@@ -7,27 +7,38 @@ from typing import Any, Dict, Iterable, Tuple
 
 from sqlalchemy import insert, select, update
 
+from cards import normalize_actions
 from storage_db import a2a_agents, a2a_messages, timeline_items, write_connection
 
 
-def _parse_timestamp(value: Any) -> datetime:
+def _parse_timestamp(value: Any, *, field: str = "created_at") -> datetime:
+    """Parse a stored timestamp, or fail.
+
+    Substituting now() for an unparsable value silently reorders the timeline
+    and, because the UPDATE path used to write created_at back, moved the
+    record forward again on every re-run. A migration that cannot read its
+    own input should say so."""
     if isinstance(value, datetime):
         return value
     if isinstance(value, str) and value:
         try:
             return datetime.fromisoformat(value)
-        except ValueError:
-            pass
+        except ValueError as exc:
+            raise ValueError(f"unparsable {field} {value!r}") from exc
     return datetime.now(timezone.utc)
 
 
 def _read_json(path: Path) -> Dict[str, Any]:
+    """Read a JSON store, or fail loudly.
+
+    A corrupt file must not read as "nothing to migrate". This is a one-shot
+    move of the only copy of the data: swallowing a decode error here reports
+    `inserted=0` under a "Migration complete" banner and exits 0, and the
+    operator deletes the JSON store on the strength of that. A truncated or
+    partially flushed file is exactly how a JSON store dies."""
     if not path.exists():
         return {}
-    try:
-        return json.loads(path.read_text(encoding="utf-8"))
-    except json.JSONDecodeError:
-        return {}
+    return json.loads(path.read_text(encoding="utf-8"))
 
 
 def _upsert_timeline_items(items: Iterable[Dict[str, Any]]) -> Tuple[int, int]:
@@ -43,9 +54,14 @@ def _upsert_timeline_items(items: Iterable[Dict[str, Any]]) -> Tuple[int, int]:
                 "user_id": item.get("user_id", "default"),
                 "title": item.get("title", "Untitled"),
                 "body": item.get("body", ""),
+                # A JSON store predating typed cards has neither field. Carry
+                # across whatever is there and leave the rest empty -- reads
+                # upgrade a legacy record from `body` on the way out.
+                "blocks": item.get("blocks") or [],
+                "schema_version": item.get("schema_version") or "",
                 "status": item.get("status", "unread"),
                 "posted_by": item.get("posted_by", "agent"),
-                "actions": item.get("actions", []),
+                "actions": normalize_actions(item.get("actions")),
                 "metadata": item.get("metadata", {}),
                 "created_at": _parse_timestamp(item.get("created_at")),
                 "updated_at": _parse_timestamp(item.get("updated_at")) if item.get("updated_at") else None,
@@ -54,7 +70,13 @@ def _upsert_timeline_items(items: Iterable[Dict[str, Any]]) -> Tuple[int, int]:
                 select(timeline_items.c.id).where(timeline_items.c.id == item_id)
             ).fetchone()
             if exists:
-                conn.execute(update(timeline_items).where(timeline_items.c.id == item_id).values(**payload))
+                # created_at belongs to the original record; a re-run must not
+                # move it.
+                conn.execute(
+                    update(timeline_items)
+                    .where(timeline_items.c.id == item_id)
+                    .values(**{k: v for k, v in payload.items() if k != "created_at"})
+                )
                 updated += 1
             else:
                 conn.execute(insert(timeline_items).values(**payload))

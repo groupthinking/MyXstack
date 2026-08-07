@@ -6,12 +6,19 @@
 
 Deploy **four services** from this same repository:
 
-| Service | Start command |
-|---|---|
-| `mcp-server` | `python server.py` |
-| `timeline-server` | `python timeline_server.py` |
-| `listener` | `python listener.py` |
-| `mcp-dispatcher` | `python mcp_dispatcher.py` |
+| Service name | Start command | Runs |
+|---|---|---|
+| `mcp-server` | `python server.py` | MCP tools over the X API |
+| `timeline-server` | `python timeline_server.py` | Timeline + A2A API and the `/ui` approval surface |
+| `listener` | `python listener.py` | X mention poller |
+| `mcp-dispatcher` | `python mcp_dispatcher.py` | Timeline action executor |
+
+**The service name is load-bearing.** Railway will start this repo with
+`uvicorn main:app` unless you set a start command, and `main.py` picks what to
+run from `RAILWAY_SERVICE_NAME`. A name it does not recognise yields a
+container that answers `/health` and runs no worker at all, which looks
+healthy. Either set the start commands above, or name each service exactly as
+in the first column.
 
 Add a Railway Postgres plugin, then set the **same** `DATABASE_URL` on all four services.
 
@@ -24,6 +31,31 @@ The timeline and A2A schema are auto-created at startup. If you are migrating ol
 ```bash
 python scripts/migrate_json_to_sql.py
 ```
+
+#### Required environment for the Python stack
+
+Set these on **every** service — Railway services do not inherit each other's
+environment.
+
+| Variable | Why |
+|---|---|
+| `DATABASE_URL` | Shared Postgres, as above. Unset means each service gets its own local SQLite file, which is almost never what you want on Railway. |
+| `TIMELINE_API_TOKEN` | **Required on a deployment.** This API includes the PATCH that authorizes agent actions, so an empty value makes `timeline-server` refuse to start rather than serve approvals anonymously. Generate with `openssl rand -hex 32`. |
+| `XAI_API_KEY` | Grok reasoning for the listener and dispatcher. |
+| X API credentials | `X_BEARER_TOKEN`, `X_API_KEY`, `X_API_SECRET`, `X_ACCESS_TOKEN`, `X_ACCESS_SECRET` — the listener needs them to read mentions and reply. |
+
+Wire the cross-service URLs after the first deploy: set `MCP_SERVER_URL` and
+`TIMELINE_API_URL` on `listener` and `mcp-dispatcher` to the deployed
+`mcp-server` and `timeline-server` URLs.
+
+`TIMELINE_ALLOW_INSECURE=1` overrides the token requirement. Only do that on a
+deliberately closed network — approvals become anonymous to anyone who can
+reach the port.
+
+The approval UI is served by `timeline-server` at `/ui`.
+
+> The environment-variable tables further down this document describe the
+> standalone TypeScript agent in `src/`, not this service stack.
 
 ### 1. Local Development Machine
 

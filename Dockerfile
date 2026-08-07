@@ -13,6 +13,8 @@ COPY openapi.json .
 # JSON->SQL migration documented in README.md and docs/DEPLOYMENT.md.
 COPY agents/ ./agents/
 COPY scripts/ ./scripts/
+# Approval surface served by timeline_server at /ui
+COPY ui/ ./ui/
 
 # Default command (overridden per service in docker-compose)
 CMD ["sh", "-lc", "uvicorn main:app --host 0.0.0.0 --port ${PORT:-8000}"]

@@ -17,7 +17,10 @@ from agents.base import (
     AgentReply,
     MentionContext,
     TeamMember,
+    approve_reject,
+    build_card,
     grok_chat,
+    text_block,
     truncate_for_reply,
     wrap_untrusted,
 )
@@ -50,17 +53,22 @@ class ShoppingAgent(TeamMember):
         if not picks:
             return AgentReply(text="Shopping agent is offline (no XAI_API_KEY configured).")
 
-        card = {
-            "title": "Shopping picks",
-            "body": f"Request:\n{mention.text}\n\nPicks:\n{picks}",
-            "actions": ["Approve Purchase", "Reject"],
-            "metadata": {
+        card = build_card(
+            title="Shopping picks",
+            blocks=[
+                text_block(mention.text, label="Request"),
+                text_block(picks, label="Picks"),
+            ],
+            # Labels must stay in sync with execute_action() below, which
+            # matches on them rather than on the action id.
+            actions=approve_reject("Approve Purchase", "Reject"),
+            metadata={
                 "agent_id": self.profile.id,
                 "action_type": "purchase",
                 "mention_id": mention.mention_id,
                 "author_id": mention.author_id,
             },
-        }
+        )
         reply = truncate_for_reply(picks, suffix="… Full list on your timeline.")
         return AgentReply(text=reply, card=card)
 

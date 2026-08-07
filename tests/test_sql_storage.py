@@ -1,4 +1,5 @@
 import json
+import multiprocessing
 import os
 import threading
 from pathlib import Path
@@ -9,7 +10,27 @@ import pytest
 import a2a_store
 import timeline_store
 from scripts.migrate_json_to_sql import migrate
-from storage_db import get_engine, metadata, normalize_database_url, reset_engine_for_tests
+from storage_db import (
+    get_engine,
+    metadata,
+    normalize_database_url,
+    reset_engine_for_tests,
+    timeline_items,
+)
+
+# Every column added to timeline_items after #125 shipped the SQL layer. These
+# are what a database created by that revision is missing, so they define both
+# the "legacy" table the upgrade tests build and what the upgrade must add.
+# Keep in step with storage_db.timeline_items -- a column added there and not
+# here silently stops being covered.
+COLUMNS_ADDED_SINCE_THE_SQL_LAYER_LANDED = {"blocks", "schema_version", "dispatched_action"}
+
+# A rename is worse than an addition: the stale name lingers here, the legacy
+# table keeps a column that no longer exists, and both upgrade tests pass while
+# testing nothing.
+assert COLUMNS_ADDED_SINCE_THE_SQL_LAYER_LANDED <= {c.name for c in timeline_items.columns}, (
+    "a column named here no longer exists on storage_db.timeline_items"
+)
 
 
 @pytest.fixture()
@@ -213,3 +234,256 @@ def test_json_to_sql_migration_is_idempotent(tmp_path, monkeypatch):
     migrated_messages = a2a_store.list_messages("timeline-ui")
     assert len(migrated_messages) == 1
     assert migrated_messages[0]["id"] == "msg-1"
+
+
+def test_a_database_predating_the_card_columns_is_upgraded_in_place(tmp_path, monkeypatch):
+    """`metadata.create_all` leaves an existing table alone, so a database
+    created before `blocks`/`schema_version` existed would keep its old column
+    set and fail every read. Adding them on connect is what keeps a database
+    written by the previous revision usable.
+
+    This runs against whichever backend the suite is pointed at. That matters:
+    the ADD COLUMN is rendered per dialect, so the Postgres form (JSONB, and a
+    NOT NULL default applied to existing rows) is only actually exercised when
+    TEST_DATABASE_URL is set.
+    """
+    from datetime import datetime, timezone
+
+    from sqlalchemy import Column, MetaData, Table, create_engine, inspect
+
+    from storage_db import get_engine, reset_engine_for_tests, timeline_items
+
+    url = os.getenv("TEST_DATABASE_URL") or f"sqlite:///{tmp_path / 'old.db'}"
+
+    legacy_meta = _make_legacy_table(url)
+    bootstrap = create_engine(normalize_database_url(url), future=True)
+    with bootstrap.begin() as conn:
+        conn.execute(
+            legacy_meta.tables[timeline_items.name].insert().values(
+                id="legacy-1",
+                user_id="default",
+                title="Old card",
+                body="BUY 10 $TSLA",
+                status="unread",
+                posted_by="tradedesk",
+                actions=["Approve"],
+                metadata={},
+                created_at=datetime(2024, 1, 1, tzinfo=timezone.utc),
+                updated_at=None,
+            )
+        )
+    bootstrap.dispose()
+
+    monkeypatch.setenv("DATABASE_URL", url)
+    reset_engine_for_tests()
+
+    columns = {c["name"] for c in inspect(get_engine()).get_columns(timeline_items.name)}
+    assert COLUMNS_ADDED_SINCE_THE_SQL_LAYER_LANDED <= columns
+
+    # The row written before the columns existed still reads, and upgrades to
+    # typed content rather than erroring on the newly added NOT NULL columns.
+    item = timeline_store.get_item("legacy-1")
+    assert item is not None
+    assert item["blocks"] == [{"type": "text", "label": None, "text": "BUY 10 $TSLA"}]
+    assert [a["id"] for a in item["actions"]] == ["approve"]
+
+    reset_engine_for_tests()
+
+
+def _make_legacy_table(url):
+    """Build timeline_items as the revision before this branch defined it.
+
+    One definition of "the schema before these columns", used by every upgrade
+    test. Two copies would drift, and the test that drifted would quietly stop
+    testing the schema it names. Returns the MetaData -- the engine it used is
+    disposed here, so returning that would hand back a dead one."""
+    from sqlalchemy import Column, MetaData, Table, create_engine
+
+    from storage_db import normalize_database_url, timeline_items
+
+    engine = create_engine(normalize_database_url(url), future=True)
+    legacy = MetaData()
+    Table(
+        timeline_items.name,
+        legacy,
+        *[
+            Column(c.name, c.type, primary_key=c.primary_key, nullable=c.nullable)
+            for c in timeline_items.columns
+            if c.name not in COLUMNS_ADDED_SINCE_THE_SQL_LAYER_LANDED
+        ],
+    )
+    legacy.drop_all(engine)
+    legacy.create_all(engine)
+    engine.dispose()
+    return legacy
+
+
+def test_concurrent_startups_do_not_collide_on_the_column_upgrade(tmp_path, monkeypatch):
+    """All four services boot at once against one database.
+
+    The reflection in _add_missing_columns is not a lock, so several callers
+    can decide a column is missing before any of them adds it. Whoever loses
+    that race must not crash -- the column being there is the goal, and it does
+    not matter who created it.
+    """
+    from sqlalchemy import create_engine, inspect
+
+    from storage_db import _add_missing_columns, normalize_database_url, timeline_items
+
+    url = os.getenv("TEST_DATABASE_URL") or f"sqlite:///{tmp_path / 'race.db'}"
+    _make_legacy_table(url)
+
+    # A separate engine per worker, so each reflects the schema independently
+    # -- a shared engine would not reproduce the race.
+    workers = 4
+    engines = [create_engine(normalize_database_url(url), future=True) for _ in range(workers)]
+    barrier = threading.Barrier(workers)
+    errors: List[BaseException] = []
+
+    def boot(engine):
+        try:
+            barrier.wait(timeout=30)
+            _add_missing_columns(engine)
+        except BaseException as exc:  # noqa: BLE001 - re-raised via `errors`
+            errors.append(exc)
+
+    threads = [threading.Thread(target=boot, args=(e,)) for e in engines]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=60)
+
+    assert errors == [], f"a concurrent startup failed: {errors[0]!r}"
+
+    columns = {c["name"] for c in inspect(engines[0]).get_columns(timeline_items.name)}
+    assert COLUMNS_ADDED_SINCE_THE_SQL_LAYER_LANDED <= columns
+    for engine in engines:
+        engine.dispose()
+
+
+def test_a_real_migration_failure_is_not_swallowed():
+    """The duplicate-column tolerance must not hide a genuinely broken ALTER."""
+    from sqlalchemy.exc import DBAPIError
+
+    from storage_db import _is_duplicate_column
+
+    duplicate = DBAPIError("stmt", {}, Exception('column "blocks" already exists'))
+    sqlite_duplicate = DBAPIError("stmt", {}, Exception("duplicate column name: blocks"))
+    unrelated = DBAPIError("stmt", {}, Exception("permission denied for table timeline_items"))
+
+    assert _is_duplicate_column(duplicate) is True
+    assert _is_duplicate_column(sqlite_duplicate) is True
+    assert _is_duplicate_column(unrelated) is False
+
+
+def _boot_one_service(url, queue):
+    """A whole service starting: fresh interpreter, its own engine, its own
+    module state. Must run in a separate *process* -- threads share
+    `_ENGINE_LOCK`, `_SEED_LOCK` and the cached engine, which serializes
+    exactly the steps whose cross-process race this is testing.
+    """
+    import os
+    import sys
+
+    sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    os.environ["DATABASE_URL"] = url
+    try:
+        import a2a_store
+        import storage_db
+
+        storage_db.reset_engine_for_tests()
+        storage_db.get_engine()          # create_all
+        a2a_store.list_agents()          # seeds DEFAULT_AGENTS
+        queue.put(None)
+    except BaseException as exc:  # noqa: BLE001 - reported via the queue
+        queue.put(f"{type(exc).__name__}: {str(exc)[:200]}")
+
+
+def test_a_first_deploy_boots_every_service_against_an_empty_database(tmp_path, monkeypatch):
+    """The first deploy: empty database, all four services starting at once.
+
+    Two reflect-then-write races meet here. `create_all` checks which tables
+    exist before creating them, and the DEFAULT_AGENTS seed checks which agents
+    exist before inserting them -- neither check is a lock, and on Postgres
+    (READ COMMITTED) both can be stale by the time the write lands. SQLite
+    hides this because its writers serialize, so it only bites on the
+    production backend.
+    """
+    from storage_db import get_engine, reset_engine_for_tests
+
+    url = os.getenv("TEST_DATABASE_URL") or f"sqlite:///{tmp_path / 'fresh.db'}"
+    monkeypatch.setenv("DATABASE_URL", url)
+
+    # Start from genuinely nothing, the way a newly provisioned database is.
+    reset_engine_for_tests()
+    metadata.drop_all(get_engine())
+    reset_engine_for_tests()
+
+    workers = 4
+    ctx = multiprocessing.get_context("spawn")
+    queue = ctx.Queue()
+    procs = [ctx.Process(target=_boot_one_service, args=(url, queue)) for _ in range(workers)]
+    for proc in procs:
+        proc.start()
+    for proc in procs:
+        proc.join(timeout=120)
+
+    failures = [msg for msg in (queue.get(timeout=30) for _ in range(workers)) if msg]
+    assert failures == [], f"{len(failures)}/{workers} services failed to boot: {failures[0]}"
+
+    reset_engine_for_tests()
+    ids = [agent["id"] for agent in a2a_store.list_agents()]
+    assert len(ids) == len(set(ids)), f"an agent was seeded twice: {ids}"
+    reset_engine_for_tests()
+
+
+def test_a_corrupt_json_store_fails_the_migration_instead_of_reporting_success(
+    db_url, tmp_path, monkeypatch
+):
+    """`inserted=0` under a "Migration complete" banner is how an operator
+    decides it is safe to delete the JSON store. A file this cannot read must
+    not produce that message."""
+    from scripts.migrate_json_to_sql import migrate
+
+    corrupt = tmp_path / "timeline.json"
+    corrupt.write_text('{"items": [{"id": "a"', encoding="utf-8")  # truncated write
+    monkeypatch.setenv("TIMELINE_STORE_PATH", str(corrupt))
+    monkeypatch.setenv("A2A_STORE_PATH", str(tmp_path / "missing.json"))
+
+    with pytest.raises(json.JSONDecodeError):
+        migrate()
+
+
+def test_an_unreadable_timestamp_fails_rather_than_becoming_now(db_url, tmp_path, monkeypatch):
+    """Substituting now() reorders the timeline silently."""
+    from scripts.migrate_json_to_sql import migrate
+
+    path = tmp_path / "timeline.json"
+    path.write_text(
+        json.dumps({"items": [{"id": "a", "title": "t", "created_at": "not-a-date"}]}),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("TIMELINE_STORE_PATH", str(path))
+    monkeypatch.setenv("A2A_STORE_PATH", str(tmp_path / "missing.json"))
+
+    with pytest.raises(ValueError, match="unparsable created_at"):
+        migrate()
+
+
+def test_re_running_the_migration_does_not_move_created_at(db_url, tmp_path, monkeypatch):
+    from scripts.migrate_json_to_sql import migrate
+
+    path = tmp_path / "timeline.json"
+    path.write_text(
+        json.dumps(
+            {"items": [{"id": "a", "title": "t", "created_at": "2024-01-01T00:00:00+00:00"}]}
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("TIMELINE_STORE_PATH", str(path))
+    monkeypatch.setenv("A2A_STORE_PATH", str(tmp_path / "missing.json"))
+
+    migrate()
+    first = timeline_store.get_item("a")["created_at"]
+    migrate()
+    assert timeline_store.get_item("a")["created_at"] == first

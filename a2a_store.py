@@ -3,6 +3,8 @@ import uuid
 from typing import Any, Dict, List, Optional
 
 from sqlalchemy import insert, select, update
+from sqlalchemy.engine import Connection
+from sqlalchemy.exc import IntegrityError
 
 from storage_db import (
     a2a_agents,
@@ -81,21 +83,42 @@ def _ensure_default_agents() -> None:
         if _SEEDED_ENGINE is engine:
             return
 
-        with write_connection() as conn:
+        with read_connection() as conn:
             existing_ids = {
                 row[0]
                 for row in conn.execute(select(a2a_agents.c.id).where(a2a_agents.c.id.in_([a["id"] for a in DEFAULT_AGENTS])))
             }
 
-            for agent in DEFAULT_AGENTS:
-                if agent["id"] in existing_ids:
-                    continue
-                conn.execute(
-                    insert(a2a_agents).values(
-                        **agent,
-                        created_at=utc_now(),
+        for agent in DEFAULT_AGENTS:
+            if agent["id"] in existing_ids:
+                continue
+            # _SEED_LOCK only covers threads in this process, and every service
+            # seeds on boot against the same database. On SQLite the writers
+            # serialize, but Postgres runs this at READ COMMITTED, so the check
+            # above can be stale by the time the insert lands. Losing that race
+            # means another service already created the agent, which is the
+            # desired end state -- so each insert stands alone (an error would
+            # otherwise poison a shared transaction) and a duplicate is fine.
+            try:
+                with write_connection() as conn:
+                    conn.execute(
+                        insert(a2a_agents).values(
+                            **agent,
+                            created_at=utc_now(),
+                        )
                     )
-                )
+            except IntegrityError:
+                # IntegrityError covers every constraint, not just the primary
+                # key collision this tolerates. Confirm the desired end state
+                # actually holds -- otherwise a NOT NULL or check violation
+                # would be swallowed here and _SEEDED_ENGINE set below, so the
+                # agent stays missing and no error is ever raised.
+                with read_connection() as check:
+                    present = check.execute(
+                        select(a2a_agents.c.id).where(a2a_agents.c.id == agent["id"])
+                    ).fetchone()
+                if not present:
+                    raise
 
         _SEEDED_ENGINE = engine
 
@@ -160,7 +183,12 @@ def list_messages(agent_id: str) -> List[Dict[str, Any]]:
     return [_serialize_message(row_to_dict(row)) for row in rows]
 
 
-def add_message(payload: Dict[str, Any]) -> Dict[str, Any]:
+def add_message(payload: Dict[str, Any], *, conn: Optional[Connection] = None) -> Dict[str, Any]:
+    """Record an A2A message.
+
+    Pass `conn` to enlist in a caller's transaction. The approval path does,
+    so that claiming a card and recording the dispatch it authorises land
+    together or not at all."""
     message = {
         "id": payload.get("id") or str(uuid.uuid4()),
         "from_agent": payload.get("from", "system"),
@@ -170,6 +198,10 @@ def add_message(payload: Dict[str, Any]) -> Dict[str, Any]:
         "metadata": payload.get("metadata", {}),
         "created_at": utc_now(),
     }
-    with write_connection() as conn:
-        conn.execute(insert(a2a_messages).values(**message))
+    statement = insert(a2a_messages).values(**message)
+    if conn is not None:
+        conn.execute(statement)
+    else:
+        with write_connection() as own_conn:
+            own_conn.execute(statement)
     return _serialize_message(message)

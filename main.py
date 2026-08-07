@@ -47,11 +47,21 @@ def _build_worker_app(kind: str) -> FastAPI:
         return {"ok": True}
 
     def _start_worker() -> None:
-        if kind == "x-listener":
+        # Accept the names docs/DEPLOYMENT.md tells operators to use as well as
+        # the original ones. A service whose name matched neither used to come
+        # up healthy with no worker running at all -- /health returned ok and
+        # nothing ever polled X.
+        if kind in ("x-listener", "listener"):
             from listener import main as run
-        elif kind == "mcp-dispatcher":
+        elif kind in ("mcp-dispatcher", "dispatcher"):
             from mcp_dispatcher import main as run
         else:
+            print(
+                f"WARNING: no worker is defined for RAILWAY_SERVICE_NAME={kind!r}; "
+                "this container will stay up and do nothing. Expected one of: "
+                "mcp-server, timeline-server, listener, mcp-dispatcher.",
+                flush=True,
+            )
             return
 
         thread = threading.Thread(target=run, name=f"{kind}-thread", daemon=True)
@@ -71,7 +81,7 @@ if service == "timeline-server":
     from timeline_server import app as app  # noqa: F401
 elif service == "mcp-server":
     app = _build_mcp_server_app()
-elif service in {"x-listener", "mcp-dispatcher"}:
+elif service in {"x-listener", "listener", "mcp-dispatcher", "dispatcher"}:
     app = _build_worker_app(service)
 else:
     # Safe default for unknown service names.

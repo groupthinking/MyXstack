@@ -1,0 +1,421 @@
+"""Timeline API behaviour: auth, typed cards, and action resolution.
+
+Each test points the store at a throwaway database and rebuilds the schema, so
+nothing leaks between tests or into a developer's real `~/.xmcp/xmcp.db`.
+"""
+
+import importlib
+import os
+
+import pytest
+from fastapi.testclient import TestClient
+
+from storage_db import get_engine, metadata, reset_engine_for_tests
+
+
+@pytest.fixture
+def client(tmp_path, monkeypatch):
+    url = os.getenv("TEST_DATABASE_URL") or f"sqlite:///{tmp_path / 'xmcp.db'}"
+    monkeypatch.setenv("DATABASE_URL", url)
+    monkeypatch.delenv("TIMELINE_API_TOKEN", raising=False)
+    monkeypatch.delenv("TIMELINE_CORS_ORIGINS", raising=False)
+    # enforce_token_policy() runs at import and is fatal on a deployment with
+    # no token. A CI runner inside Kubernetes sets KUBERNETES_SERVICE_HOST, so
+    # without this the reload below raises and the whole suite errors out --
+    # on the runner, not on anyone's laptop.
+    for marker in ("RAILWAY_SERVICE_NAME", "RAILWAY_ENVIRONMENT", "KUBERNETES_SERVICE_HOST"):
+        monkeypatch.delenv(marker, raising=False)
+    reset_engine_for_tests()
+
+    # A shared Postgres persists across tests; start each one from a clean
+    # schema so ids and dispatched-action assertions stay independent.
+    engine = get_engine()
+    metadata.drop_all(engine)
+    metadata.create_all(engine)
+
+    import timeline_server
+
+    importlib.reload(timeline_server)
+    yield TestClient(timeline_server.app)
+    reset_engine_for_tests()
+
+
+def _create(client, **overrides):
+    payload = {"title": "Card", "body": "hello", "actions": ["Approve", "Reject"]}
+    payload.update(overrides)
+    response = client.post("/v1/timeline/items", json=payload)
+    assert response.status_code == 200, response.text
+    return response.json()
+
+
+# --- typed cards -----------------------------------------------------------
+
+
+def test_legacy_card_round_trips_and_gains_typed_actions(client):
+    item = _create(client)
+    assert item["body"] == "hello"
+    assert [a["id"] for a in item["actions"]] == ["approve", "reject"]
+    assert item["blocks"][0]["text"] == "hello"
+
+
+def test_typed_card_derives_body_from_blocks(client):
+    item = _create(
+        client,
+        body="",
+        blocks=[
+            {"type": "facts", "label": "Order", "facts": [{"key": "Side", "value": "BUY"}]},
+            {"type": "text", "label": "Note", "text": "pending"},
+        ],
+        actions=[{"id": "approve", "label": "Approve", "style": "primary"}],
+    )
+    # `body` stays populated for every reader that predates blocks.
+    assert "Order:\nSide: BUY" in item["body"]
+    assert "Note:\npending" in item["body"]
+    assert item["actions"][0]["style"] == "primary"
+
+
+def test_explicit_body_is_not_overwritten_by_blocks(client):
+    item = _create(
+        client,
+        body="explicit",
+        blocks=[{"type": "text", "text": "derived"}],
+    )
+    assert item["body"] == "explicit"
+
+
+def test_unknown_block_type_is_rejected(client):
+    response = client.post(
+        "/v1/timeline/items",
+        json={"title": "x", "blocks": [{"type": "hologram", "text": "hi"}]},
+    )
+    assert response.status_code == 422
+
+
+# --- action resolution -----------------------------------------------------
+
+
+def test_action_id_resolves_to_the_label_and_dispatches(client):
+    item = _create(
+        client,
+        actions=[{"id": "approve", "label": "Approve Purchase"}],
+    )
+    response = client.patch(f"/v1/timeline/items/{item['id']}", json={"action_id": "approve"})
+    assert response.status_code == 200
+    assert response.json()["status"] == "approve purchase"
+
+    # The dispatcher must receive the label, not the id — members match on it.
+    messages = client.get("/v1/a2a/agents/mcp-orchestrator/messages").json()["messages"]
+    action_messages = [m for m in messages if m["type"] == "timeline_action"]
+    assert action_messages[0]["metadata"]["action"] == "Approve Purchase"
+
+
+def test_legacy_action_label_still_works(client):
+    item = _create(client)
+    response = client.patch(f"/v1/timeline/items/{item['id']}", json={"action": "Approve"})
+    assert response.status_code == 200
+    assert response.json()["status"] == "approve"
+
+    messages = client.get("/v1/a2a/agents/mcp-orchestrator/messages").json()["messages"]
+    assert messages[0]["metadata"]["action"] == "Approve"
+
+
+def test_action_id_the_card_never_offered_is_refused(client):
+    item = _create(client, actions=[])
+    response = client.patch(f"/v1/timeline/items/{item['id']}", json={"action_id": "approve"})
+    assert response.status_code == 400
+
+    # Nothing may be dispatched for a refused action.
+    messages = client.get("/v1/a2a/agents/mcp-orchestrator/messages").json()["messages"]
+    assert [m for m in messages if m["type"] == "timeline_action"] == []
+
+
+def test_action_id_on_a_missing_card_is_404(client):
+    response = client.patch("/v1/timeline/items/nope", json={"action_id": "approve"})
+    assert response.status_code == 404
+
+
+def _dispatched_actions(client):
+    messages = client.get("/v1/a2a/agents/mcp-orchestrator/messages").json()["messages"]
+    return [m["metadata"].get("action") for m in messages if m["type"] == "timeline_action"]
+
+
+def test_bare_action_label_the_card_never_offered_is_refused(client):
+    # The legacy `action` path must be validated too — guarding only
+    # `action_id` would leave this wide open while looking closed.
+    item = _create(client)
+    response = client.patch(
+        f"/v1/timeline/items/{item['id']}", json={"action": "Delete Everything"}
+    )
+    assert response.status_code == 400
+    assert _dispatched_actions(client) == []
+
+
+def test_bare_action_label_on_a_card_with_no_actions_is_refused(client):
+    item = _create(client, actions=[])
+    response = client.patch(f"/v1/timeline/items/{item['id']}", json={"action": "Approve"})
+    assert response.status_code == 400
+    assert _dispatched_actions(client) == []
+
+
+def test_action_label_contradicting_action_id_is_refused(client):
+    item = _create(
+        client,
+        actions=[{"id": "approve", "label": "Approve"}, {"id": "reject", "label": "Reject"}],
+    )
+    response = client.patch(
+        f"/v1/timeline/items/{item['id']}",
+        json={"action_id": "approve", "action": "Reject"},
+    )
+    assert response.status_code == 400
+    assert _dispatched_actions(client) == []
+
+
+def test_matching_action_and_action_id_are_accepted(client):
+    item = _create(client, actions=[{"id": "approve", "label": "Approve"}])
+    response = client.patch(
+        f"/v1/timeline/items/{item['id']}",
+        json={"action_id": "approve", "action": "Approve"},
+    )
+    assert response.status_code == 200
+    assert _dispatched_actions(client) == ["Approve"]
+
+
+def test_duplicate_action_ids_are_rejected_at_creation(client):
+    response = client.post(
+        "/v1/timeline/items",
+        json={
+            "title": "x",
+            "actions": [
+                {"id": "approve", "label": "Approve Purchase"},
+                {"id": "approve", "label": "Approve Trade"},
+            ],
+        },
+    )
+    assert response.status_code == 422
+
+
+def test_unsafe_link_url_is_rejected_at_creation(client):
+    response = client.post(
+        "/v1/timeline/items",
+        json={
+            "title": "x",
+            "blocks": [
+                {
+                    "type": "links",
+                    "links": [{"label": "click", "url": "javascript:alert(1)"}],
+                }
+            ],
+        },
+    )
+    assert response.status_code == 422
+
+
+# --- auth ------------------------------------------------------------------
+
+
+def test_api_is_open_when_no_token_is_configured(client):
+    assert client.get("/v1/timeline/users/default/items").status_code == 200
+
+
+def test_token_is_required_when_configured(client, monkeypatch):
+    monkeypatch.setenv("TIMELINE_API_TOKEN", "s3cret")
+
+    assert client.get("/v1/timeline/users/default/items").status_code == 401
+    assert client.post("/v1/timeline/items", json={"title": "x"}).status_code == 401
+    assert client.patch("/v1/timeline/items/any", json={"action": "Approve"}).status_code == 401
+    assert client.get("/v1/a2a/agents").status_code == 401
+
+    ok = client.get(
+        "/v1/timeline/users/default/items",
+        headers={"Authorization": "Bearer s3cret"},
+    )
+    assert ok.status_code == 200
+
+
+def test_wrong_token_is_rejected(client, monkeypatch):
+    monkeypatch.setenv("TIMELINE_API_TOKEN", "s3cret")
+    response = client.get(
+        "/v1/timeline/users/default/items",
+        headers={"Authorization": "Bearer wrong"},
+    )
+    assert response.status_code == 401
+
+
+def test_health_never_requires_a_token(client, monkeypatch):
+    monkeypatch.setenv("TIMELINE_API_TOKEN", "s3cret")
+    assert client.get("/health").status_code == 200
+
+
+# --- approval is single-shot ------------------------------------------------
+
+
+def _dispatch_count(client, item_id):
+    response = client.get("/v1/a2a/agents/mcp-orchestrator/messages")
+    return len(
+        [
+            m
+            for m in response.json()["messages"]
+            if m.get("metadata", {}).get("timeline_item_id") == item_id
+        ]
+    )
+
+
+def test_an_action_dispatches_once_however_many_times_it_is_sent(client):
+    """A card carries its action to a member exactly once.
+
+    Validating that the card offers the action is not enough: every repeat
+    passes that same check. Without a claim, a double-click or a retried
+    request executes the trade again.
+    """
+    item = _create(client, actions=[{"id": "approve", "label": "Approve"}])
+
+    first = client.patch(f"/v1/timeline/items/{item['id']}", json={"action_id": "approve"})
+    assert first.status_code == 200
+
+    for _ in range(5):
+        again = client.patch(f"/v1/timeline/items/{item['id']}", json={"action_id": "approve"})
+        assert again.status_code == 409
+        assert "already dispatched" in again.json()["detail"].lower()
+
+    assert _dispatch_count(client, item["id"]) == 1
+
+
+def test_a_second_different_action_cannot_be_dispatched_either(client):
+    """Approve-then-Reject is the same problem wearing a different label: the
+    card is terminal once any action has gone out, so the claim is per card,
+    not per action."""
+    item = _create(client, actions=[{"id": "approve", "label": "Approve"},
+                                    {"id": "reject", "label": "Reject"}])
+
+    assert client.patch(
+        f"/v1/timeline/items/{item['id']}", json={"action_id": "approve"}
+    ).status_code == 200
+    assert client.patch(
+        f"/v1/timeline/items/{item['id']}", json={"action_id": "reject"}
+    ).status_code == 409
+
+    assert _dispatch_count(client, item["id"]) == 1
+
+
+def test_the_legacy_label_path_is_claimed_too(client):
+    """The bare `action` label path reaches the same dispatch, so it must go
+    through the same claim -- otherwise the guard is trivially bypassed."""
+    item = _create(client, actions=["Approve", "Reject"])
+
+    assert client.patch(
+        f"/v1/timeline/items/{item['id']}", json={"action": "Approve"}
+    ).status_code == 200
+    assert client.patch(
+        f"/v1/timeline/items/{item['id']}", json={"action": "Approve"}
+    ).status_code == 409
+
+    assert _dispatch_count(client, item["id"]) == 1
+
+
+def test_a_rejected_action_never_claims_the_card(client):
+    """A 400 must leave the card approvable. Claiming on a refused action
+    would let anyone burn a card by sending an action it never offered."""
+    item = _create(client, actions=[{"id": "approve", "label": "Approve"}])
+
+    assert client.patch(
+        f"/v1/timeline/items/{item['id']}", json={"action_id": "nope"}
+    ).status_code == 400
+    assert client.patch(
+        f"/v1/timeline/items/{item['id']}", json={"action": "Not Offered"}
+    ).status_code == 400
+
+    # Still approvable afterwards.
+    assert client.patch(
+        f"/v1/timeline/items/{item['id']}", json={"action_id": "approve"}
+    ).status_code == 200
+    assert _dispatch_count(client, item["id"]) == 1
+
+
+def test_a_non_action_patch_is_unaffected(client):
+    """Editing a card must not consume its one dispatch."""
+    item = _create(client, actions=[{"id": "approve", "label": "Approve"}])
+
+    assert client.patch(
+        f"/v1/timeline/items/{item['id']}", json={"status": "read"}
+    ).status_code == 200
+    assert client.patch(
+        f"/v1/timeline/items/{item['id']}", json={"action_id": "approve"}
+    ).status_code == 200
+    assert _dispatch_count(client, item["id"]) == 1
+
+
+def test_dispatched_action_is_exposed_so_a_surface_can_close_the_card(client):
+    """The approval UI greys out a card's buttons the moment it is claimed,
+    rather than waiting for the dispatcher to write processed_action a poll
+    later. That needs the field on every read, including right after create,
+    so a surface never has to treat "missing" and "unclaimed" alike."""
+    item = _create(client, actions=[{"id": "approve", "label": "Approve"}])
+    assert item["dispatched_action"] == ""
+
+    approved = client.patch(
+        f"/v1/timeline/items/{item['id']}", json={"action_id": "approve"}
+    ).json()
+    assert approved["dispatched_action"] == "Approve"
+
+    assert client.get(f"/v1/timeline/items/{item['id']}").json()["dispatched_action"] == "Approve"
+    listed = client.get("/v1/timeline/users/default/items").json()["items"]
+    assert listed[0]["dispatched_action"] == "Approve"
+
+
+def test_a_failed_dispatch_leaves_the_card_approvable(client, monkeypatch):
+    """The claim and the dispatch it authorises commit together.
+
+    This is the failure the claim itself introduces: if a claim could outlive
+    a dispatch that never happened, the card would be terminal with nothing
+    executed -- a lost approval, which is harder to notice than a duplicate
+    one. Sharing a transaction means the claim dies with the dispatch.
+    """
+    import timeline_server as server
+
+    item = _create(client, actions=[{"id": "approve", "label": "Approve"}])
+
+    def explode(*_args, **_kwargs):
+        raise RuntimeError("A2A write failed")
+
+    monkeypatch.setattr(server, "add_message", explode)
+    with pytest.raises(RuntimeError):
+        client.patch(f"/v1/timeline/items/{item['id']}", json={"action_id": "approve"})
+
+    # The claim must not have survived the rollback.
+    assert client.get(f"/v1/timeline/items/{item['id']}").json()["dispatched_action"] == ""
+
+    monkeypatch.undo()
+    retry = client.patch(f"/v1/timeline/items/{item['id']}", json={"action_id": "approve"})
+    assert retry.status_code == 200
+    assert _dispatch_count(client, item["id"]) == 1
+
+
+def test_an_ambiguous_action_id_is_refused_rather_than_guessed(client):
+    """A stored card can carry duplicate ids -- reads stay lenient so one bad
+    record cannot break a timeline. Dispatch must not be lenient: picking the
+    first match would execute a different action than the human chose."""
+    item = _create(client, actions=[{"id": "approve", "label": "Approve"}])
+
+    # Write duplicates straight to the store, bypassing the strict API check
+    # that stops them being created in the first place.
+    from storage_db import timeline_items, write_connection
+    from sqlalchemy import update as sql_update
+
+    with write_connection() as conn:
+        conn.execute(
+            sql_update(timeline_items)
+            .where(timeline_items.c.id == item["id"])
+            .values(
+                actions=[
+                    {"id": "approve", "label": "Approve Trade", "style": "neutral", "confirm": None},
+                    {"id": "approve", "label": "Approve Refund", "style": "neutral", "confirm": None},
+                ]
+            )
+        )
+
+    response = client.patch(f"/v1/timeline/items/{item['id']}", json={"action_id": "approve"})
+    assert response.status_code == 400
+    assert _dispatch_count(client, item["id"]) == 0
+    # And nothing was claimed, so the card is still recoverable by a surface
+    # that sends an unambiguous action.
+    assert client.get(f"/v1/timeline/items/{item['id']}").json()["dispatched_action"] == ""

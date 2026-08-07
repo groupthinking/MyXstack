@@ -16,6 +16,8 @@ dist/
 
 # Data stores (created at runtime)
 *.json.bak
+*.json.lock
+*.json.tmp
 ~/.xmcp/
 
 # OS

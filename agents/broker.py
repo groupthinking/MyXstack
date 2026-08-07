@@ -7,33 +7,12 @@ by replacing PaperBroker with an adapter exposing the same interface.
 
 import json
 import os
-import threading
 import uuid
-from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-_LEDGER_LOCK = threading.Lock()
-
-
-@contextmanager
-def _ledger_file_lock(ledger_path: Path):
-    """Cross-process advisory lock so concurrent dispatchers can't corrupt
-    the ledger (fcntl is Unix-only; degrades to the thread lock elsewhere)."""
-    ledger_path.parent.mkdir(parents=True, exist_ok=True)
-    try:
-        import fcntl
-    except ImportError:
-        yield
-        return
-    lock_file = ledger_path.with_suffix(".lock")
-    with open(lock_file, "w") as handle:
-        fcntl.flock(handle, fcntl.LOCK_EX)
-        try:
-            yield
-        finally:
-            fcntl.flock(handle, fcntl.LOCK_UN)
+from store_lock import file_lock
 
 
 class PaperBroker:
@@ -72,7 +51,7 @@ class PaperBroker:
         with the same key already exists, it is returned with
         duplicate=True instead of booking a second fill.
         """
-        with _LEDGER_LOCK, _ledger_file_lock(self.ledger_path):
+        with file_lock(self.ledger_path):
             fills = self._read()
             if key:
                 for existing in fills:
@@ -96,7 +75,7 @@ class PaperBroker:
         totals: Dict[str, float] = {}
         # Same locks as execute(): _read()'s corrupt-ledger recovery renames
         # the file, which must not race a writer in another process.
-        with _LEDGER_LOCK, _ledger_file_lock(self.ledger_path):
+        with file_lock(self.ledger_path):
             fills = self._read()
         for fill in fills:
             sign = 1 if fill.get("side") == "buy" else -1

@@ -14,7 +14,9 @@ from agents.base import (
     AgentReply,
     MentionContext,
     TeamMember,
+    build_card,
     grok_chat,
+    text_block,
     truncate_for_reply,
     wrap_untrusted,
 )
@@ -43,14 +45,16 @@ class ResearchAgent(TeamMember):
             return AgentReply(text="Research agent is offline (no XAI_API_KEY configured).")
 
         reply = truncate_for_reply(brief, suffix="… Full brief on your timeline.")
-        card = {
-            "title": "Research brief",
-            "body": f"Question:\n{mention.text}\n\nBrief:\n{brief}",
-            "actions": [],
-            "metadata": {
+        card = build_card(
+            title="Research brief",
+            blocks=[
+                text_block(mention.text, label="Question"),
+                text_block(brief, label="Brief"),
+            ],
+            metadata={
                 "agent_id": self.profile.id,
                 "action_type": "research",
                 "mention_id": mention.mention_id,
             },
-        }
+        )
         return AgentReply(text=reply, card=card)
