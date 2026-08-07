@@ -79,8 +79,14 @@ def normalize_database_url(url: Optional[str]) -> str:
     raw = (url or "").strip()
     if not raw:
         return f"sqlite:///{DEFAULT_DB_PATH}"
-    if raw.startswith("postgres://"):
-        return "postgresql://" + raw[len("postgres://") :]
+    # Railway injects the legacy postgres:// scheme, which SQLAlchemy rejects.
+    # Both postgres:// and a bare postgresql:// also resolve to the psycopg2
+    # driver, which we do not ship -- requirements.txt pins psycopg 3. Pin the
+    # driver explicitly so the Postgres path does not fail on first connect.
+    # An explicit postgresql+<driver>:// is left alone.
+    for prefix in ("postgres://", "postgresql://"):
+        if raw.startswith(prefix):
+            return "postgresql+psycopg://" + raw[len(prefix) :]
     if raw.startswith("sqlite:///"):
         path = raw[len("sqlite:///") :]
         if path.startswith("~"):

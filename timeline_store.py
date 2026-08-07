@@ -55,8 +55,15 @@ def add_item(payload: Dict[str, Any]) -> Dict[str, Any]:
 
 def update_item(item_id: str, updates: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     with write_connection() as conn:
+        # with_for_update() locks the row for the life of the transaction, so the
+        # read-merge-write below stays atomic. Without it, Postgres runs this at
+        # READ COMMITTED and two callers merging different metadata keys can read
+        # the same base dict and clobber each other -- the approval/action path
+        # this store backs must not lose updates. SQLite has no row locks and
+        # SQLAlchemy renders nothing there; write_connection()'s BEGIN IMMEDIATE
+        # already serializes SQLite writers.
         row = conn.execute(
-            select(timeline_items).where(timeline_items.c.id == item_id)
+            select(timeline_items).where(timeline_items.c.id == item_id).with_for_update()
         ).fetchone()
         if not row:
             return None

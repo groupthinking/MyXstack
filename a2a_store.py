@@ -1,3 +1,4 @@
+import threading
 import uuid
 from typing import Any, Dict, List, Optional
 
@@ -6,12 +7,16 @@ from sqlalchemy import insert, select, update
 from storage_db import (
     a2a_agents,
     a2a_messages,
+    get_engine,
     row_to_dict,
     serialize_record,
     utc_now,
     write_connection,
     read_connection,
 )
+
+_SEEDED_ENGINE = None
+_SEED_LOCK = threading.Lock()
 
 DEFAULT_AGENTS = [
     {
@@ -62,21 +67,37 @@ def _serialize_message(record: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def _ensure_default_agents() -> None:
-    with write_connection() as conn:
-        existing_ids = {
-            row[0]
-            for row in conn.execute(select(a2a_agents.c.id).where(a2a_agents.c.id.in_([a["id"] for a in DEFAULT_AGENTS])))
-        }
+    # Seeding is idempotent but takes a write transaction (BEGIN IMMEDIATE on
+    # SQLite), so it must not run on every read. Track the engine we seeded
+    # against rather than a plain bool: reset_engine_for_tests() builds a new
+    # engine, and identity comparison makes the next call re-seed it.
+    global _SEEDED_ENGINE
 
-        for agent in DEFAULT_AGENTS:
-            if agent["id"] in existing_ids:
-                continue
-            conn.execute(
-                insert(a2a_agents).values(
-                    **agent,
-                    created_at=utc_now(),
+    engine = get_engine()
+    if _SEEDED_ENGINE is engine:
+        return
+
+    with _SEED_LOCK:
+        if _SEEDED_ENGINE is engine:
+            return
+
+        with write_connection() as conn:
+            existing_ids = {
+                row[0]
+                for row in conn.execute(select(a2a_agents.c.id).where(a2a_agents.c.id.in_([a["id"] for a in DEFAULT_AGENTS])))
+            }
+
+            for agent in DEFAULT_AGENTS:
+                if agent["id"] in existing_ids:
+                    continue
+                conn.execute(
+                    insert(a2a_agents).values(
+                        **agent,
+                        created_at=utc_now(),
+                    )
                 )
-            )
+
+        _SEEDED_ENGINE = engine
 
 
 def list_agents() -> List[Dict[str, Any]]:

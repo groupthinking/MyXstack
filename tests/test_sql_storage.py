@@ -1,25 +1,40 @@
 import json
+import os
 import threading
 from pathlib import Path
+from typing import List
 
 import pytest
 
 import a2a_store
 import timeline_store
 from scripts.migrate_json_to_sql import migrate
-from storage_db import normalize_database_url, reset_engine_for_tests
+from storage_db import get_engine, metadata, normalize_database_url, reset_engine_for_tests
 
 
 @pytest.fixture()
-def sqlite_db_url(tmp_path, monkeypatch):
-    db_url = f"sqlite:///{tmp_path / 'xmcp.db'}"
-    monkeypatch.setenv("DATABASE_URL", db_url)
+def db_url(tmp_path, monkeypatch):
+    """Backend under test.
+
+    Defaults to a throwaway SQLite file. Set TEST_DATABASE_URL to run the same
+    suite against Postgres -- worth doing, because SQLite's BEGIN IMMEDIATE
+    serializes writers and therefore masks concurrency bugs that only appear
+    under Postgres' READ COMMITTED.
+    """
+    url = os.getenv("TEST_DATABASE_URL") or f"sqlite:///{tmp_path / 'xmcp.db'}"
+    monkeypatch.setenv("DATABASE_URL", url)
     reset_engine_for_tests()
-    yield db_url
+
+    # A shared Postgres persists across tests; start each one from a clean schema.
+    engine = get_engine()
+    metadata.drop_all(engine)
+    metadata.create_all(engine)
+
+    yield url
     reset_engine_for_tests()
 
 
-def test_timeline_crud_round_trip(sqlite_db_url):
+def test_timeline_crud_round_trip(db_url):
     item = timeline_store.add_item(
         {
             "user_id": "u1",
@@ -49,7 +64,7 @@ def test_timeline_crud_round_trip(sqlite_db_url):
     assert timeline_store.get_item(item["id"]) is None
 
 
-def test_a2a_crud_round_trip(sqlite_db_url):
+def test_a2a_crud_round_trip(db_url):
     agents = a2a_store.list_agents()
     assert any(agent["id"] == "mcp-orchestrator" for agent in agents)
 
@@ -83,34 +98,50 @@ def test_a2a_crud_round_trip(sqlite_db_url):
     assert messages[0]["from"] == "timeline-ui"
 
 
-def test_concurrent_timeline_updates_do_not_lose_metadata(sqlite_db_url):
+def test_concurrent_timeline_updates_do_not_lose_metadata(db_url):
     item = timeline_store.add_item({"user_id": "u1", "title": "Race", "metadata": {}})
-    barrier = threading.Barrier(3)
+    # Each writer contributes one distinct key through a single update_item()
+    # call, so the merge that must stay atomic happens inside the store. Two
+    # writers looping over {key: i} instead converges on the same final value
+    # whether or not updates are lost, which hides the race.
+    writers = 40
+    barrier = threading.Barrier(writers)
+    errors: List[Exception] = []
 
-    def writer(key: str) -> None:
-        barrier.wait()
-        for i in range(40):
-            timeline_store.update_item(item["id"], {"metadata": {key: i}})
+    def writer(index: int) -> None:
+        try:
+            barrier.wait()
+            timeline_store.update_item(item["id"], {"metadata": {f"k{index}": index}})
+        except Exception as exc:  # pragma: no cover - surfaced by the assert below
+            errors.append(exc)
 
-    t1 = threading.Thread(target=writer, args=("a",))
-    t2 = threading.Thread(target=writer, args=("b",))
-    t1.start()
-    t2.start()
-    barrier.wait()
-    t1.join()
-    t2.join()
+    threads = [threading.Thread(target=writer, args=(i,)) for i in range(writers)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
 
+    assert not errors, errors[:3]
     updated = timeline_store.get_item(item["id"])
     assert updated is not None
     metadata = updated["metadata"]
-    assert metadata["a"] == 39
-    assert metadata["b"] == 39
+    missing = [f"k{i}" for i in range(writers) if f"k{i}" not in metadata]
+    assert not missing, f"lost {len(missing)} concurrent updates: {missing[:5]}"
 
 
 def test_postgres_url_is_normalized():
     legacy = "postgres" + "://localhost:5432/xmcp"
-    normalized = "postgresql" + "://localhost:5432/xmcp"
-    assert normalize_database_url(legacy) == normalized
+    modern = "postgresql" + "://localhost:5432/xmcp"
+    # Both must name the psycopg (v3) driver explicitly. requirements.txt ships
+    # psycopg 3, but SQLAlchemy resolves a bare postgresql:// to psycopg2 and
+    # dies with ModuleNotFoundError on first connect.
+    expected = "postgresql+psycopg" + "://localhost:5432/xmcp"
+    assert normalize_database_url(legacy) == expected
+    assert normalize_database_url(modern) == expected
+
+    # An explicitly chosen driver is left alone.
+    pinned = "postgresql+psycopg2" + "://localhost:5432/xmcp"
+    assert normalize_database_url(pinned) == pinned
 
 
 def test_json_to_sql_migration_is_idempotent(tmp_path, monkeypatch):
