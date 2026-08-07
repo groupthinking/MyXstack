@@ -282,3 +282,85 @@ def test_a_database_predating_the_card_columns_is_upgraded_in_place(tmp_path, mo
     assert [a["id"] for a in item["actions"]] == ["approve"]
 
     reset_engine_for_tests()
+
+
+def _make_legacy_table(url):
+    """The timeline_items table as the revision before blocks/schema_version
+    defined it."""
+    from sqlalchemy import Column, MetaData, Table, create_engine
+
+    from storage_db import normalize_database_url, timeline_items
+
+    engine = create_engine(normalize_database_url(url), future=True)
+    legacy = MetaData()
+    Table(
+        timeline_items.name,
+        legacy,
+        *[
+            Column(c.name, c.type, primary_key=c.primary_key, nullable=c.nullable)
+            for c in timeline_items.columns
+            if c.name not in ("blocks", "schema_version")
+        ],
+    )
+    legacy.drop_all(engine)
+    legacy.create_all(engine)
+    engine.dispose()
+    return engine
+
+
+def test_concurrent_startups_do_not_collide_on_the_column_upgrade(tmp_path, monkeypatch):
+    """All four services boot at once against one database.
+
+    The reflection in _add_missing_columns is not a lock, so several callers
+    can decide a column is missing before any of them adds it. Whoever loses
+    that race must not crash -- the column being there is the goal, and it does
+    not matter who created it.
+    """
+    from sqlalchemy import create_engine, inspect
+
+    from storage_db import _add_missing_columns, normalize_database_url, timeline_items
+
+    url = os.getenv("TEST_DATABASE_URL") or f"sqlite:///{tmp_path / 'race.db'}"
+    _make_legacy_table(url)
+
+    # A separate engine per worker, so each reflects the schema independently
+    # -- a shared engine would not reproduce the race.
+    workers = 4
+    engines = [create_engine(normalize_database_url(url), future=True) for _ in range(workers)]
+    barrier = threading.Barrier(workers)
+    errors: List[BaseException] = []
+
+    def boot(engine):
+        try:
+            barrier.wait(timeout=30)
+            _add_missing_columns(engine)
+        except BaseException as exc:  # noqa: BLE001 - re-raised via `errors`
+            errors.append(exc)
+
+    threads = [threading.Thread(target=boot, args=(e,)) for e in engines]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=60)
+
+    assert errors == [], f"a concurrent startup failed: {errors[0]!r}"
+
+    columns = {c["name"] for c in inspect(engines[0]).get_columns(timeline_items.name)}
+    assert {"blocks", "schema_version"} <= columns
+    for engine in engines:
+        engine.dispose()
+
+
+def test_a_real_migration_failure_is_not_swallowed():
+    """The duplicate-column tolerance must not hide a genuinely broken ALTER."""
+    from sqlalchemy.exc import DBAPIError
+
+    from storage_db import _is_duplicate_column
+
+    duplicate = DBAPIError("stmt", {}, Exception('column "blocks" already exists'))
+    sqlite_duplicate = DBAPIError("stmt", {}, Exception("duplicate column name: blocks"))
+    unrelated = DBAPIError("stmt", {}, Exception("permission denied for table timeline_items"))
+
+    assert _is_duplicate_column(duplicate) is True
+    assert _is_duplicate_column(sqlite_duplicate) is True
+    assert _is_duplicate_column(unrelated) is False

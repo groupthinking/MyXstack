@@ -20,6 +20,7 @@ from sqlalchemy import (
 )
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.engine import Connection, Engine
+from sqlalchemy.exc import DBAPIError
 
 DEFAULT_DB_PATH = Path("~/.xmcp/xmcp.db").expanduser()
 SQLITE_BUSY_TIMEOUT_MS = int(os.getenv("SQLITE_BUSY_TIMEOUT_MS", "5000"))
@@ -113,6 +114,19 @@ def _configure_sqlite(engine: Engine) -> None:
         cursor.close()
 
 
+def _is_duplicate_column(exc: DBAPIError) -> bool:
+    """Whether a failed ADD COLUMN failed only because the column is there.
+
+    Matched on message text rather than a driver error code, because the two
+    backends raise unrelated exception types (psycopg's DuplicateColumn vs
+    SQLite's generic OperationalError). Anything that is not recognisably a
+    duplicate column is re-raised -- a genuinely broken migration must not be
+    swallowed here.
+    """
+    message = str(getattr(exc, "orig", exc)).lower()
+    return "already exists" in message or "duplicate column" in message
+
+
 def _add_missing_columns(engine: Engine) -> None:
     """Add columns that `create_all` won't.
 
@@ -122,6 +136,14 @@ def _add_missing_columns(engine: Engine) -> None:
     migration framework here, so bring the one table that has gained columns
     up to date in place. Each ADD COLUMN is guarded by a live reflection, which
     makes this a no-op on an already-current database.
+
+    The reflection is not a lock, though. All four services boot at once and
+    share one database, so several can reflect "missing" before any of them
+    alters, and the losers of that race would otherwise crash on startup with
+    a duplicate-column error. Each statement therefore runs in its own
+    transaction (an error poisons the whole transaction on Postgres, which
+    would strand any column after the first) and treats "already exists" as
+    success -- another process adding the column is the desired end state.
     """
     inspector = inspect(engine)
     if not inspector.has_table(timeline_items.name):
@@ -134,18 +156,21 @@ def _add_missing_columns(engine: Engine) -> None:
 
     type_compiler = engine.dialect.type_compiler_instance
     preparer = engine.dialect.identifier_preparer
-    with engine.begin() as conn:
-        for column in missing:
-            # Existing rows need a value for a NOT NULL column, so every
-            # backfillable column added here carries a constant default.
-            default = "'[]'" if column.name == "blocks" else "''"
-            conn.execute(
-                text(
-                    f"ALTER TABLE {preparer.format_table(timeline_items)} "
-                    f"ADD COLUMN {preparer.quote(column.name)} "
-                    f"{type_compiler.process(column.type)} NOT NULL DEFAULT {default}"
-                )
-            )
+    for column in missing:
+        # Existing rows need a value for a NOT NULL column, so every
+        # backfillable column added here carries a constant default.
+        default = "'[]'" if column.name == "blocks" else "''"
+        statement = text(
+            f"ALTER TABLE {preparer.format_table(timeline_items)} "
+            f"ADD COLUMN {preparer.quote(column.name)} "
+            f"{type_compiler.process(column.type)} NOT NULL DEFAULT {default}"
+        )
+        try:
+            with engine.begin() as conn:
+                conn.execute(statement)
+        except DBAPIError as exc:
+            if not _is_duplicate_column(exc):
+                raise
 
 
 def _create_engine() -> Engine:
