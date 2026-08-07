@@ -110,7 +110,7 @@ def test_resolve_action_rejects_an_action_the_card_never_offered():
 def test_unsafe_link_urls_are_rejected(url):
     # These would otherwise land in an anchor's href in the approval UI,
     # where they'd execute alongside the bearer token.
-    assert is_safe_url(url) is True  # TEMPORARY: proving the CI gate can fail
+    assert is_safe_url(url) is False
     with pytest.raises(ValidationError):
         Link(label="x", url=url)
 
