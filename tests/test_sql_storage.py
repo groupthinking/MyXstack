@@ -219,27 +219,51 @@ def test_a_database_predating_the_card_columns_is_upgraded_in_place(tmp_path, mo
     """`metadata.create_all` leaves an existing table alone, so a database
     created before `blocks`/`schema_version` existed would keep its old column
     set and fail every read. Adding them on connect is what keeps a database
-    written by the previous revision usable."""
-    from sqlalchemy import create_engine, inspect, text
+    written by the previous revision usable.
+
+    This runs against whichever backend the suite is pointed at. That matters:
+    the ADD COLUMN is rendered per dialect, so the Postgres form (JSONB, and a
+    NOT NULL default applied to existing rows) is only actually exercised when
+    TEST_DATABASE_URL is set.
+    """
+    from datetime import datetime, timezone
+
+    from sqlalchemy import Column, MetaData, Table, create_engine, inspect
 
     from storage_db import get_engine, reset_engine_for_tests, timeline_items
 
-    db_path = tmp_path / "old.db"
-    url = f"sqlite:///{db_path}"
+    url = os.getenv("TEST_DATABASE_URL") or f"sqlite:///{tmp_path / 'old.db'}"
 
-    # Build the table as the previous revision defined it: no blocks, no
-    # schema_version, and one row already in it.
-    legacy_columns = [c for c in timeline_items.columns if c.name not in ("blocks", "schema_version")]
-    bootstrap = create_engine(url, future=True)
+    # The table exactly as the previous revision defined it: every current
+    # column except the two this change adds. Copying the real Column objects
+    # keeps the DDL dialect-correct instead of stringly-typed.
+    legacy_meta = MetaData()
+    Table(
+        timeline_items.name,
+        legacy_meta,
+        *[
+            Column(c.name, c.type, primary_key=c.primary_key, nullable=c.nullable)
+            for c in timeline_items.columns
+            if c.name not in ("blocks", "schema_version")
+        ],
+    )
+
+    bootstrap = create_engine(normalize_database_url(url), future=True)
+    legacy_meta.drop_all(bootstrap)
+    legacy_meta.create_all(bootstrap)
     with bootstrap.begin() as conn:
-        cols = ", ".join(f"{c.name} TEXT" for c in legacy_columns)
-        conn.execute(text(f"CREATE TABLE timeline_items ({cols}, PRIMARY KEY (id))"))
         conn.execute(
-            text(
-                "INSERT INTO timeline_items "
-                "(id, user_id, title, body, status, posted_by, actions, metadata, created_at) "
-                "VALUES ('legacy-1', 'default', 'Old card', 'BUY 10 $TSLA', 'unread', "
-                "'tradedesk', '[\"Approve\"]', '{}', '2024-01-01T00:00:00+00:00')"
+            legacy_meta.tables[timeline_items.name].insert().values(
+                id="legacy-1",
+                user_id="default",
+                title="Old card",
+                body="BUY 10 $TSLA",
+                status="unread",
+                posted_by="tradedesk",
+                actions=["Approve"],
+                metadata={},
+                created_at=datetime(2024, 1, 1, tzinfo=timezone.utc),
+                updated_at=None,
             )
         )
     bootstrap.dispose()
@@ -247,10 +271,11 @@ def test_a_database_predating_the_card_columns_is_upgraded_in_place(tmp_path, mo
     monkeypatch.setenv("DATABASE_URL", url)
     reset_engine_for_tests()
 
-    columns = {c["name"] for c in inspect(get_engine()).get_columns("timeline_items")}
+    columns = {c["name"] for c in inspect(get_engine()).get_columns(timeline_items.name)}
     assert {"blocks", "schema_version"} <= columns
 
-    # The pre-existing row still reads, and upgrades to typed content.
+    # The row written before the columns existed still reads, and upgrades to
+    # typed content rather than erroring on the newly added NOT NULL columns.
     item = timeline_store.get_item("legacy-1")
     assert item is not None
     assert item["blocks"] == [{"type": "text", "label": None, "text": "BUY 10 $TSLA"}]
