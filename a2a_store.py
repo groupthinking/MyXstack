@@ -1,13 +1,13 @@
 import json
 import os
-import threading
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from store_lock import file_lock
+
 A2A_STORE_PATH = Path(os.getenv("A2A_STORE_PATH", "~/.xmcp/a2a_store.json")).expanduser()
-A2A_STORE_LOCK = threading.Lock()
 
 DEFAULT_AGENTS = [
     {
@@ -64,17 +64,20 @@ def _read_store() -> Dict[str, Any]:
 
 
 def _write_store(data: Dict[str, Any]) -> None:
+    """Atomic replace so a mid-write crash can't truncate the store."""
     A2A_STORE_PATH.parent.mkdir(parents=True, exist_ok=True)
-    A2A_STORE_PATH.write_text(json.dumps(data, indent=2), encoding="utf-8")
+    tmp = A2A_STORE_PATH.with_suffix(A2A_STORE_PATH.suffix + ".tmp")
+    tmp.write_text(json.dumps(data, indent=2), encoding="utf-8")
+    os.replace(tmp, A2A_STORE_PATH)
 
 
 def list_agents() -> List[Dict[str, Any]]:
-    with A2A_STORE_LOCK:
+    with file_lock(A2A_STORE_PATH):
         return _read_store()["agents"]
 
 
 def get_agent(agent_id: str) -> Optional[Dict[str, Any]]:
-    with A2A_STORE_LOCK:
+    with file_lock(A2A_STORE_PATH):
         for agent in _read_store()["agents"]:
             if agent.get("id") == agent_id:
                 return agent
@@ -95,7 +98,7 @@ def register_agent(payload: Dict[str, Any]) -> Dict[str, Any]:
         "tags": payload.get("tags", []),
         "created_at": _utc_now(),
     }
-    with A2A_STORE_LOCK:
+    with file_lock(A2A_STORE_PATH):
         data = _read_store()
         for existing in data["agents"]:
             if existing.get("id") == agent["id"]:
@@ -111,7 +114,7 @@ def register_agent(payload: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def list_messages(agent_id: str) -> List[Dict[str, Any]]:
-    with A2A_STORE_LOCK:
+    with file_lock(A2A_STORE_PATH):
         data = _read_store()
         return [msg for msg in data["messages"] if msg.get("to") == agent_id]
 
@@ -126,7 +129,7 @@ def add_message(payload: Dict[str, Any]) -> Dict[str, Any]:
         "metadata": payload.get("metadata", {}),
         "created_at": _utc_now(),
     }
-    with A2A_STORE_LOCK:
+    with file_lock(A2A_STORE_PATH):
         data = _read_store()
         data["messages"].insert(0, message)
         _write_store(data)

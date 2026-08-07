@@ -19,7 +19,11 @@ from agents.base import (
     AgentReply,
     MentionContext,
     TeamMember,
+    approve_reject,
+    build_card,
+    facts_block,
     grok_chat,
+    text_block,
 )
 from agents.broker import PaperBroker
 
@@ -82,15 +86,30 @@ class TradeDeskAgent(TeamMember):
                 f"relevant to a proposed {trade['side']} order. Facts only, no advice."
             )
 
-        body = f"Requested via X mention {mention.mention_id or '?'}:\n\n{mention.text}"
+        blocks = [
+            facts_block(
+                {
+                    "Ticker": f"${trade['ticker']}",
+                    "Side": trade["side"].upper(),
+                    "Quantity": f"{trade['quantity']:g}",
+                    "Venue": "paper (simulated)",
+                },
+                label="Order",
+            ),
+            text_block(
+                mention.text,
+                label=f"Requested via X mention {mention.mention_id or '?'}",
+            ),
+        ]
         if context:
-            body += f"\n\nMarket context (Grok):\n{context}"
+            blocks.append(text_block(context, label="Market context (Grok)"))
 
-        card = {
-            "title": f"Trade proposal: {summary}",
-            "body": body,
-            "actions": ["Approve", "Reject"],
-            "metadata": {
+        card = build_card(
+            title=f"Trade proposal: {summary}",
+            blocks=blocks,
+            # execute_action() below matches these labels exactly.
+            actions=approve_reject("Approve", "Reject"),
+            metadata={
                 "agent_id": self.profile.id,
                 "action_type": "trade",
                 "ticker": trade["ticker"],
@@ -99,7 +118,7 @@ class TradeDeskAgent(TeamMember):
                 "mention_id": mention.mention_id,
                 "author_id": mention.author_id,
             },
-        }
+        )
         reply = (
             f"📋 Trade proposal logged: {summary}. Pending human approval on the "
             f"timeline. (Paper trading — no live orders.)"

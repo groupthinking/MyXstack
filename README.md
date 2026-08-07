@@ -111,6 +111,11 @@ curl http://localhost:8080/v1/a2a/agents
 | PATCH | `/v1/timeline/items/{id}` | Update / take action on card |
 | DELETE | `/v1/timeline/items/{id}` | Delete card |
 
+Take an action with either `{"action_id": "approve"}` (what the UI sends) or
+`{"action": "Approve"}` (the label). Both dispatch identically — the server
+resolves an id to its label before handing off, because team members match on
+labels. An `action_id` the card doesn't offer is rejected with a 400.
+
 ### Agent-to-Agent (A2A)
 
 | Method | Endpoint | Description |
@@ -120,6 +125,65 @@ curl http://localhost:8080/v1/a2a/agents
 | POST | `/v1/a2a/agents` | Register new agent |
 | GET | `/v1/a2a/agents/{id}/messages` | Get agent's messages |
 | POST | `/v1/a2a/messages` | Send agent message |
+
+## Approval UI
+
+The timeline server serves a dependency-free approval surface at
+**http://localhost:8080/ui**. It lists cards, renders their typed content, and
+sends approvals back to the API. Enter the API token (if one is set) in the
+header; it is kept in `localStorage`, never in the served file.
+
+Cards whose action has already been executed render disabled, mirroring the
+dispatcher's rule that a processed card is terminal.
+
+### Authentication
+
+The timeline and A2A API — including the PATCH that authorizes agent actions —
+is **unauthenticated when `TIMELINE_API_TOKEN` is empty**, which keeps local
+development frictionless. The server prints a warning at startup in that state.
+Set the token before exposing the service anywhere:
+
+```bash
+TIMELINE_API_TOKEN=$(openssl rand -hex 32)
+```
+
+All four services read the same value. `/health` never requires it.
+Set `TIMELINE_CORS_ORIGINS` only if you host a surface on another origin.
+
+## Card Content
+
+A card carries typed `blocks` so a surface can render structure instead of one
+blob of text. Four block types cover what members produce:
+
+| Block | Use |
+|-------|-----|
+| `text` | A prose section (`label` becomes its heading) |
+| `facts` | Key/value pairs — the parameters of a proposed action |
+| `table` | Tabular results |
+| `links` | Sources or destinations |
+
+Actions are typed too — `{id, label, style, confirm}` — where `label` is both
+what the human reads and what a member's `execute_action` matches on.
+
+Members build cards with helpers from `agents/base.py` rather than raw dicts:
+
+```python
+from agents.base import build_card, facts_block, text_block, approve_reject
+
+card = build_card(
+    title="Trade proposal: BUY 10 $TSLA",
+    blocks=[
+        facts_block({"Ticker": "$TSLA", "Side": "BUY"}, label="Order"),
+        text_block(mention.text, label="Requested via X"),
+    ],
+    actions=approve_reject("Approve", "Reject"),
+    metadata={"agent_id": "tradedesk", "action_type": "trade"},
+)
+```
+
+**Backward compatibility.** `body` is still populated — derived from `blocks`
+when not supplied — so anything reading it keeps working. Cards written before
+typed blocks are upgraded in memory on read; there is no on-disk migration.
 
 ## OpenAPI Filtering
 
@@ -181,8 +245,11 @@ Timeline cards and A2A messages are stored in JSON files at `~/.xmcp/` by defaul
 ├── timeline_server.py     # Timeline + A2A FastAPI server
 ├── listener.py            # X mention poller + Grok responder
 ├── mcp_dispatcher.py      # Timeline action executor
+├── cards.py               # Typed card schema (blocks, actions, legacy upgrade)
 ├── timeline_store.py      # JSON-file timeline persistence
 ├── a2a_store.py           # JSON-file A2A persistence
+├── store_lock.py          # Cross-process file locking for the JSON stores
+├── ui/                    # Approval surface served at /ui (no build step)
 ├── openapi.json           # X API OpenAPI spec (used by MCP server)
 ├── src/                   # TypeScript standalone agent (alternative)
 ├── docs/                  # Architecture, deployment, usage guides

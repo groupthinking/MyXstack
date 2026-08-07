@@ -67,6 +67,47 @@ interactive agent can drive its own sub-agents and bots this way.
 3. Done — routing, X replies, timeline cards, and dispatcher callbacks are
    handled by the framework.
 
+## Writing a card
+
+A card is how a member asks a human to look at something and, when it carries
+actions, to authorize something. Build one with the helpers in
+`agents/base.py` — never hand-roll the dict, or your content won't render on
+the approval surface at `/ui`.
+
+```python
+from agents.base import (
+    approve_reject, build_card, facts_block, links_block, table_block, text_block,
+)
+
+card = build_card(
+    title="Shopping picks",
+    blocks=[
+        text_block(mention.text, label="Request"),
+        table_block(["Item", "Price"], [["Speedgoat 6", "$145"]], label="Picks"),
+        links_block([{"label": "Source", "url": "https://…"}], label="Sources"),
+    ],
+    actions=approve_reject("Approve Purchase", "Reject"),
+    metadata={"agent_id": self.profile.id, "action_type": "purchase"},
+)
+```
+
+Block types are `text`, `facts`, `table`, and `links`. The set is deliberately
+small — every surface must be able to render every type, so adding one is a
+real cost rather than a free extension.
+
+Two rules matter when your card has actions:
+
+- **`metadata["agent_id"]` is required.** The dispatcher routes an approval
+  back to the member that proposed it via this field. Without it the card
+  falls through to the generic Grok executor.
+- **Action labels are the contract.** `execute_action()` receives the *label*,
+  not the id, so `approve_reject("Approve Purchase", …)` must be matched by
+  code that checks for `"Approve Purchase"`. Changing a label is a
+  behavioural change.
+
+Cards with no actions (a research brief, an error report) are informational —
+pass no `actions` and the surface renders them without buttons.
+
 ## Safety defaults
 
 - **Trades are paper-only.** `PaperBroker` writes simulated fills to a local
@@ -75,6 +116,12 @@ interactive agent can drive its own sub-agents and bots this way.
   no payment adapter ships with the repo.
 - **Actions are approval-gated.** Cards with side effects require a human
   action on the timeline before the dispatcher executes anything.
+- **Approvals are authenticated** when `TIMELINE_API_TOKEN` is set. It is
+  empty by default for local use, and the timeline server warns at startup
+  when it is — set it before exposing the service, or anyone who can reach
+  the port can approve agent actions.
+- **A surface can only trigger actions the card offers.** Posting an
+  `action_id` the card doesn't carry is rejected with a 400.
 
 ## X API Exhibit
 

@@ -9,7 +9,7 @@ import tweepy
 from dotenv import load_dotenv
 from tweepy.errors import HTTPException as TweepyHTTPException
 
-from agents.base import MentionContext
+from agents.base import MentionContext, build_card, text_block, timeline_headers
 from agents.registry import register_team, route_mention
 
 LAST_SEEN_PATH = Path(os.getenv("XMCP_LAST_SEEN_PATH", "~/.xmcp/last_seen.txt")).expanduser()
@@ -54,11 +54,17 @@ def push_timeline_card(card: dict, posted_by: str) -> None:
         "user_id": user_id,
         "title": card.get("title", "Untitled"),
         "body": card.get("body", ""),
+        "blocks": card.get("blocks", []),
         "posted_by": posted_by,
         "actions": card.get("actions", []),
         "metadata": card.get("metadata", {}),
     }
-    response = requests.post(f"{timeline_url}/v1/timeline/items", json=payload, timeout=10)
+    response = requests.post(
+        f"{timeline_url}/v1/timeline/items",
+        json=payload,
+        headers=timeline_headers(),
+        timeout=10,
+    )
     # Surface 4xx/5xx as failures so the caller holds the watermark and
     # retries — a lost card would silently defeat the approval gate.
     response.raise_for_status()
@@ -97,16 +103,18 @@ def process_mention(client: tweepy.Client, mention) -> bool:
         # watermark and retry the mention next poll.
         try:
             push_timeline_card(
-                {
-                    "title": f"Agent error on mention {mention.id}",
-                    "body": f"{member.profile.id} failed: {exc}\n\nMention:\n{mention.text}",
-                    "actions": [],
-                    "metadata": {
+                build_card(
+                    title=f"Agent error on mention {mention.id}",
+                    blocks=[
+                        text_block(f"{member.profile.id} failed: {exc}", label="Error"),
+                        text_block(mention.text, label="Mention"),
+                    ],
+                    metadata={
                         "agent_id": member.profile.id,
                         "mention_id": mention.id,
                         "error": str(exc),
                     },
-                },
+                ),
                 posted_by=member.profile.id,
             )
             return True
@@ -135,16 +143,18 @@ def process_mention(client: tweepy.Client, mention) -> bool:
         # (and any side effects) already landed.
         try:
             push_timeline_card(
-                {
-                    "title": f"Failed to post reply to mention {mention.id}",
-                    "body": f"Intended reply:\n{reply.text}\n\nError: {exc}",
-                    "actions": [],
-                    "metadata": {
+                build_card(
+                    title=f"Failed to post reply to mention {mention.id}",
+                    blocks=[
+                        text_block(reply.text, label="Intended reply"),
+                        text_block(str(exc), label="Error"),
+                    ],
+                    metadata={
                         "agent_id": member.profile.id,
                         "mention_id": mention.id,
                         "error": str(exc),
                     },
-                },
+                ),
                 posted_by=member.profile.id,
             )
         except Exception as recovery_exc:

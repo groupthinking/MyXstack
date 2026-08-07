@@ -1,13 +1,14 @@
 import json
 import os
-import threading
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from cards import SCHEMA_VERSION, derive_body, normalize_actions, normalize_card
+from store_lock import file_lock
+
 STORE_PATH = Path(os.getenv("TIMELINE_STORE_PATH", "~/.xmcp/timeline_store.json")).expanduser()
-STORE_LOCK = threading.Lock()
 
 
 def _utc_now() -> str:
@@ -34,51 +35,63 @@ def _read_store() -> Dict[str, Any]:
 
 
 def _write_store(data: Dict[str, Any]) -> None:
+    """Atomic replace so a mid-write crash can't truncate the timeline."""
     STORE_PATH.parent.mkdir(parents=True, exist_ok=True)
-    STORE_PATH.write_text(json.dumps(data, indent=2), encoding="utf-8")
+    tmp = STORE_PATH.with_suffix(STORE_PATH.suffix + ".tmp")
+    tmp.write_text(json.dumps(data, indent=2), encoding="utf-8")
+    os.replace(tmp, STORE_PATH)
 
 
 def list_items(user_id: str, status: Optional[str] = None) -> List[Dict[str, Any]]:
-    with STORE_LOCK:
+    with file_lock(STORE_PATH):
         data = _read_store()
         items = [item for item in data["items"] if item.get("user_id") == user_id]
         if status:
             items = [item for item in items if item.get("status") == status]
-        return items
+        return [normalize_card(item) for item in items]
 
 
 def get_item(item_id: str) -> Optional[Dict[str, Any]]:
-    with STORE_LOCK:
+    with file_lock(STORE_PATH):
         data = _read_store()
         for item in data["items"]:
             if item.get("id") == item_id:
-                return item
+                return normalize_card(item)
     return None
 
 
 def add_item(payload: Dict[str, Any]) -> Dict[str, Any]:
+    blocks = payload.get("blocks") or []
+    # `body` stays authoritative for every older reader, so derive it from
+    # blocks when the caller didn't supply one itself.
+    body = payload.get("body") or ""
+    if blocks and not body:
+        body = derive_body(blocks)
+
     item = {
         "id": payload.get("id") or str(uuid.uuid4()),
         "user_id": payload.get("user_id", "default"),
         "title": payload.get("title", "Untitled"),
-        "body": payload.get("body", ""),
+        "body": body,
+        "blocks": blocks,
+        "schema_version": payload.get("schema_version") or SCHEMA_VERSION,
         "status": payload.get("status", "unread"),
         "posted_by": payload.get("posted_by", "agent"),
-        "actions": payload.get("actions", []),
+        "actions": normalize_actions(payload.get("actions")),
         "metadata": payload.get("metadata", {}),
         "created_at": _utc_now(),
         "updated_at": None,
     }
 
-    with STORE_LOCK:
+    with file_lock(STORE_PATH):
         data = _read_store()
         data["items"].insert(0, item)
         _write_store(data)
-    return item
+    return normalize_card(item)
 
 
 def update_item(item_id: str, updates: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-    with STORE_LOCK:
+    with file_lock(STORE_PATH):
         data = _read_store()
         for item in data["items"]:
             if item.get("id") != item_id:
@@ -89,15 +102,21 @@ def update_item(item_id: str, updates: Dict[str, Any]) -> Optional[Dict[str, Any
             if "metadata" in updates and isinstance(updates["metadata"], dict):
                 item["metadata"] = {**item.get("metadata", {}), **updates["metadata"]}
             if "actions" in updates and isinstance(updates["actions"], list):
-                item["actions"] = updates["actions"]
+                item["actions"] = normalize_actions(updates["actions"])
+            if "blocks" in updates and isinstance(updates["blocks"], list):
+                item["blocks"] = updates["blocks"]
+                # Keep the derived text form in step with the blocks unless
+                # the caller overrode `body` in the same update.
+                if "body" not in updates or updates["body"] is None:
+                    item["body"] = derive_body(updates["blocks"])
             item["updated_at"] = _utc_now()
             _write_store(data)
-            return item
+            return normalize_card(item)
     return None
 
 
 def delete_item(item_id: str) -> bool:
-    with STORE_LOCK:
+    with file_lock(STORE_PATH):
         data = _read_store()
         original = len(data["items"])
         data["items"] = [item for item in data["items"] if item.get("id") != item_id]

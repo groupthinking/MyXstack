@@ -7,7 +7,7 @@ from typing import List, Optional
 
 import requests
 
-from agents.base import MentionContext, TeamMember
+from agents.base import MentionContext, TeamMember, timeline_headers
 from agents.router import find_target
 
 
@@ -73,7 +73,10 @@ def register_team() -> None:
         for attempt in range(3):
             try:
                 response = requests.post(
-                    f"{timeline_url}/v1/a2a/agents", json=payload, timeout=10
+                    f"{timeline_url}/v1/a2a/agents",
+                    json=payload,
+                    headers=timeline_headers(),
+                    timeout=10,
                 )
                 # 4xx/5xx (e.g. server still booting) must retry too.
                 response.raise_for_status()

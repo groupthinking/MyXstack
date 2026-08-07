@@ -15,7 +15,8 @@ run:
 	@sleep 2
 	. .venv/bin/activate && python listener.py &
 	. .venv/bin/activate && python mcp_dispatcher.py &
-	@echo "\n✅ All services running. Use 'make stop' to shut down."
+	@echo "\n✅ All services running. Approval UI: http://localhost:8080/ui"
+	@echo "   Use 'make stop' to shut down."
 
 stop:
 	@pkill -f "python server.py" 2>/dev/null || true

@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>MyXstack — Approval Timeline</title>
+    <link rel="stylesheet" href="./style.css" />
+  </head>
+  <body>
+    <header class="bar">
+      <h1>MyXstack</h1>
+      <div class="bar-controls">
+        <label class="field">
+          <span>User</span>
+          <input id="user-id" type="text" value="default" spellcheck="false" />
+        </label>
+        <label class="field">
+          <span>API token</span>
+          <input
+            id="token"
+            type="password"
+            placeholder="unset = open server"
+            spellcheck="false"
+            autocomplete="off"
+          />
+        </label>
+        <button id="refresh" type="button">Refresh</button>
+      </div>
+    </header>
+
+    <p id="status" class="status" role="status"></p>
+    <main id="feed" class="feed"></main>
+
+    <script src="./app.js"></script>
+  </body>
+</html>

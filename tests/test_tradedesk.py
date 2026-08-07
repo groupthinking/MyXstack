@@ -40,7 +40,9 @@ def test_mention_creates_approval_card(tmp_path, monkeypatch):
         MentionContext(text="@Tradedesk $TSLA buy 10", mention_id=1, author_id=2)
     )
     assert "pending human approval" in reply.text.lower()
-    assert reply.card["actions"] == ["Approve", "Reject"]
+    # Labels are the compatibility surface: execute_action() matches on them,
+    # so they must stay "Approve"/"Reject" even though actions are now typed.
+    assert [a["label"] for a in reply.card["actions"]] == ["Approve", "Reject"]
     meta = reply.card["metadata"]
     assert meta["agent_id"] == "tradedesk"
     assert meta["ticker"] == "TSLA"
