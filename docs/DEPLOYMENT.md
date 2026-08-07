@@ -25,6 +25,31 @@ The timeline and A2A schema are auto-created at startup. If you are migrating ol
 python scripts/migrate_json_to_sql.py
 ```
 
+#### Required environment for the Python stack
+
+Set these on **every** service — Railway services do not inherit each other's
+environment.
+
+| Variable | Why |
+|---|---|
+| `DATABASE_URL` | Shared Postgres, as above. Unset means each service gets its own local SQLite file, which is almost never what you want on Railway. |
+| `TIMELINE_API_TOKEN` | **Required on a deployment.** This API includes the PATCH that authorizes agent actions, so an empty value makes `timeline-server` refuse to start rather than serve approvals anonymously. Generate with `openssl rand -hex 32`. |
+| `XAI_API_KEY` | Grok reasoning for the listener and dispatcher. |
+| X API credentials | `X_BEARER_TOKEN`, `X_API_KEY`, `X_API_SECRET`, `X_ACCESS_TOKEN`, `X_ACCESS_SECRET` — the listener needs them to read mentions and reply. |
+
+Wire the cross-service URLs after the first deploy: set `MCP_SERVER_URL` and
+`TIMELINE_API_URL` on `listener` and `mcp-dispatcher` to the deployed
+`mcp-server` and `timeline-server` URLs.
+
+`TIMELINE_ALLOW_INSECURE=1` overrides the token requirement. Only do that on a
+deliberately closed network — approvals become anonymous to anyone who can
+reach the port.
+
+The approval UI is served by `timeline-server` at `/ui`.
+
+> The environment-variable tables further down this document describe the
+> standalone TypeScript agent in `src/`, not this service stack.
+
 ### 1. Local Development Machine
 
 **Best for:** Testing and personal use
