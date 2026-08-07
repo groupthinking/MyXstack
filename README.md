@@ -166,13 +166,24 @@ Wire the cross-service URLs after deployment:
 ```
 MCP_SERVER_URL=https://<mcp-server>.up.railway.app/mcp
 TIMELINE_API_URL=https://<timeline-server>.up.railway.app
+# All four services must share one database:
+DATABASE_URL=postgres://<user>:<pass>@<host>:<port>/<db>
 ```
 
 See `docs/DEPLOYMENT.md` for full Railway setup details.
 
 ## Data Storage
 
-Timeline cards and A2A messages are stored in JSON files at `~/.xmcp/` by default. This is intentional for lightweight local use. For production, override `TIMELINE_STORE_PATH` and `A2A_STORE_PATH` to point to a persistent volume.
+Timeline cards and A2A messages are stored in SQL and selected by `DATABASE_URL`:
+
+- `DATABASE_URL` unset (or `sqlite://...`) → SQLite (`~/.xmcp/xmcp.db` by default)
+- `postgres://...` or `postgresql://...` → Postgres (Railway-ready; `postgres://` is normalized automatically)
+
+Tables are created automatically on startup. For local concurrency safety, SQLite enables WAL mode and a busy timeout. To migrate legacy JSON stores (`TIMELINE_STORE_PATH`, `A2A_STORE_PATH`), run:
+
+```bash
+python scripts/migrate_json_to_sql.py
+```
 
 ## Project Structure
 
@@ -181,8 +192,10 @@ Timeline cards and A2A messages are stored in JSON files at `~/.xmcp/` by defaul
 ├── timeline_server.py     # Timeline + A2A FastAPI server
 ├── listener.py            # X mention poller + Grok responder
 ├── mcp_dispatcher.py      # Timeline action executor
-├── timeline_store.py      # JSON-file timeline persistence
-├── a2a_store.py           # JSON-file A2A persistence
+├── timeline_store.py      # SQL-backed timeline persistence
+├── a2a_store.py           # SQL-backed A2A persistence
+├── storage_db.py          # Shared SQLAlchemy engine/schema
+├── scripts/migrate_json_to_sql.py
 ├── openapi.json           # X API OpenAPI spec (used by MCP server)
 ├── src/                   # TypeScript standalone agent (alternative)
 ├── docs/                  # Architecture, deployment, usage guides

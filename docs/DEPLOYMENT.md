@@ -2,6 +2,29 @@
 
 ## Deployment Options
 
+### Railway (Python service stack)
+
+Deploy **four services** from this same repository:
+
+| Service | Start command |
+|---|---|
+| `mcp-server` | `python server.py` |
+| `timeline-server` | `python timeline_server.py` |
+| `listener` | `python listener.py` |
+| `mcp-dispatcher` | `python mcp_dispatcher.py` |
+
+Add a Railway Postgres plugin, then set the **same** `DATABASE_URL` on all four services.
+
+Storage backend selection:
+- `DATABASE_URL` unset/`sqlite://...` → local SQLite (`~/.xmcp/xmcp.db`)
+- `postgres://...` or `postgresql://...` → Postgres (`postgres://` is normalized automatically)
+
+The timeline and A2A schema are auto-created at startup. If you are migrating old local JSON stores, run:
+
+```bash
+python scripts/migrate_json_to_sql.py
+```
+
 ### 1. Local Development Machine
 
 **Best for:** Testing and personal use

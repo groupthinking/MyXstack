@@ -1,0 +1,66 @@
+name: Python Tests
+
+# agent-ci.yml detects the framework from package.json first, so this repo
+# resolves to "node" and its Python step never runs. This workflow runs the
+# pytest suite directly, with no continue-on-error, so a red suite fails the PR.
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  sqlite:
+    name: pytest (sqlite)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements-dev.txt
+
+      - name: Run tests
+        run: pytest --tb=short -q
+
+  postgres:
+    name: pytest (postgres)
+    runs-on: ubuntu-latest
+    # SQLite's BEGIN IMMEDIATE serializes writers, which hides lost-update bugs
+    # that only surface under Postgres' READ COMMITTED. Postgres is the
+    # production backend on Railway, so the suite has to run against it too.
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_DB: xmcp
+          POSTGRES_USER: xmcp
+          POSTGRES_PASSWORD: xmcp
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U xmcp -d xmcp"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements-dev.txt
+
+      - name: Run tests
+        # Deliberately the legacy postgres:// scheme Railway injects, so URL
+        # normalization is exercised end to end rather than only as a string.
+        env:
+          TEST_DATABASE_URL: postgres://xmcp:xmcp@localhost:5432/xmcp
+        run: pytest --tb=short -q
