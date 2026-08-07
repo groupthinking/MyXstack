@@ -336,3 +336,21 @@ def test_a_non_action_patch_is_unaffected(client):
         f"/v1/timeline/items/{item['id']}", json={"action_id": "approve"}
     ).status_code == 200
     assert _dispatch_count(client, item["id"]) == 1
+
+
+def test_dispatched_action_is_exposed_so_a_surface_can_close_the_card(client):
+    """The approval UI greys out a card's buttons the moment it is claimed,
+    rather than waiting for the dispatcher to write processed_action a poll
+    later. That needs the field on every read, including right after create,
+    so a surface never has to treat "missing" and "unclaimed" alike."""
+    item = _create(client, actions=[{"id": "approve", "label": "Approve"}])
+    assert item["dispatched_action"] == ""
+
+    approved = client.patch(
+        f"/v1/timeline/items/{item['id']}", json={"action_id": "approve"}
+    ).json()
+    assert approved["dispatched_action"] == "Approve"
+
+    assert client.get(f"/v1/timeline/items/{item['id']}").json()["dispatched_action"] == "Approve"
+    listed = client.get("/v1/timeline/users/default/items").json()["items"]
+    assert listed[0]["dispatched_action"] == "Approve"

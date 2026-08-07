@@ -147,7 +147,13 @@ function renderCard(item) {
 
   (item.blocks || []).forEach((block) => card.appendChild(renderBlock(block)));
 
-  const processed = (item.metadata || {}).processed_action;
+  // Two different moments close a card, and the gap between them is where a
+  // second click used to land: `dispatched_action` is set by the API the
+  // instant an action is claimed, `processed_action` only once the dispatcher
+  // has executed it. Treat either as closed so the buttons go dead on
+  // approval rather than one poll later.
+  const dispatched = item.dispatched_action;
+  const processed = (item.metadata || {}).processed_action || dispatched;
   const result = (item.metadata || {}).mcp_result;
 
   if (result) {
@@ -197,6 +203,15 @@ async function takeAction(item, action) {
       headers: headers(),
       body: JSON.stringify({ action_id: action.id }),
     });
+    // 409 is not a failure: the card was already approved — by another
+    // operator, another tab, or an earlier click of this one. Say so plainly
+    // and refresh, so the card redraws as closed instead of leaving a red
+    // error next to a card that is in exactly the intended state.
+    if (response.status === 409) {
+      setStatus("Already actioned — someone got there first.", "ok");
+      refresh();
+      return;
+    }
     if (!response.ok) {
       throw new Error(`${response.status} ${await response.text()}`);
     }

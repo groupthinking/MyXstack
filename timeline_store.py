@@ -50,6 +50,10 @@ def add_item(payload: Dict[str, Any]) -> Dict[str, Any]:
         "body": body,
         "blocks": blocks,
         "schema_version": payload.get("schema_version") or SCHEMA_VERSION,
+        # Always present, so a surface can read it uniformly instead of having
+        # to treat "missing" and "unclaimed" as the same thing. A new card has
+        # dispatched nothing; only claim_action sets this.
+        "dispatched_action": "",
         "status": payload.get("status", "unread"),
         "posted_by": payload.get("posted_by", "agent"),
         "actions": normalize_actions(payload.get("actions")),
