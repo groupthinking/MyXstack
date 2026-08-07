@@ -3,6 +3,7 @@ import uuid
 from typing import Any, Dict, List, Optional
 
 from sqlalchemy import insert, select, update
+from sqlalchemy.engine import Connection
 from sqlalchemy.exc import IntegrityError
 
 from storage_db import (
@@ -107,7 +108,17 @@ def _ensure_default_agents() -> None:
                         )
                     )
             except IntegrityError:
-                pass
+                # IntegrityError covers every constraint, not just the primary
+                # key collision this tolerates. Confirm the desired end state
+                # actually holds -- otherwise a NOT NULL or check violation
+                # would be swallowed here and _SEEDED_ENGINE set below, so the
+                # agent stays missing and no error is ever raised.
+                with read_connection() as check:
+                    present = check.execute(
+                        select(a2a_agents.c.id).where(a2a_agents.c.id == agent["id"])
+                    ).fetchone()
+                if not present:
+                    raise
 
         _SEEDED_ENGINE = engine
 
@@ -172,7 +183,12 @@ def list_messages(agent_id: str) -> List[Dict[str, Any]]:
     return [_serialize_message(row_to_dict(row)) for row in rows]
 
 
-def add_message(payload: Dict[str, Any]) -> Dict[str, Any]:
+def add_message(payload: Dict[str, Any], *, conn: Optional[Connection] = None) -> Dict[str, Any]:
+    """Record an A2A message.
+
+    Pass `conn` to enlist in a caller's transaction. The approval path does,
+    so that claiming a card and recording the dispatch it authorises land
+    together or not at all."""
     message = {
         "id": payload.get("id") or str(uuid.uuid4()),
         "from_agent": payload.get("from", "system"),
@@ -182,6 +198,10 @@ def add_message(payload: Dict[str, Any]) -> Dict[str, Any]:
         "metadata": payload.get("metadata", {}),
         "created_at": utc_now(),
     }
-    with write_connection() as conn:
-        conn.execute(insert(a2a_messages).values(**message))
+    statement = insert(a2a_messages).values(**message)
+    if conn is not None:
+        conn.execute(statement)
+    else:
+        with write_connection() as own_conn:
+            own_conn.execute(statement)
     return _serialize_message(message)

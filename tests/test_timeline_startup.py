@@ -9,10 +9,16 @@ import importlib
 
 import pytest
 
+from storage_db import reset_engine_for_tests
+
 
 def _reload_server(monkeypatch, tmp_path):
-    monkeypatch.setenv("TIMELINE_STORE_PATH", str(tmp_path / "timeline.json"))
-    monkeypatch.setenv("A2A_STORE_PATH", str(tmp_path / "a2a.json"))
+    # TIMELINE_STORE_PATH/A2A_STORE_PATH only feed the JSON->SQL migration
+    # script now; the server reaches its data through DATABASE_URL. Setting
+    # the old paths isolated nothing, so these tests were running against
+    # whatever sits at ~/.xmcp/xmcp.db on the machine.
+    monkeypatch.setenv("DATABASE_URL", f"sqlite:///{tmp_path / 'startup.db'}")
+    reset_engine_for_tests()
     import timeline_server
 
     return importlib.reload(timeline_server)

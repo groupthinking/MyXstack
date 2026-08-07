@@ -19,6 +19,12 @@ def client(tmp_path, monkeypatch):
     monkeypatch.setenv("DATABASE_URL", url)
     monkeypatch.delenv("TIMELINE_API_TOKEN", raising=False)
     monkeypatch.delenv("TIMELINE_CORS_ORIGINS", raising=False)
+    # enforce_token_policy() runs at import and is fatal on a deployment with
+    # no token. A CI runner inside Kubernetes sets KUBERNETES_SERVICE_HOST, so
+    # without this the reload below raises and the whole suite errors out --
+    # on the runner, not on anyone's laptop.
+    for marker in ("RAILWAY_SERVICE_NAME", "RAILWAY_ENVIRONMENT", "KUBERNETES_SERVICE_HOST"):
+        monkeypatch.delenv(marker, raising=False)
     reset_engine_for_tests()
 
     # A shared Postgres persists across tests; start each one from a clean
@@ -354,3 +360,62 @@ def test_dispatched_action_is_exposed_so_a_surface_can_close_the_card(client):
     assert client.get(f"/v1/timeline/items/{item['id']}").json()["dispatched_action"] == "Approve"
     listed = client.get("/v1/timeline/users/default/items").json()["items"]
     assert listed[0]["dispatched_action"] == "Approve"
+
+
+def test_a_failed_dispatch_leaves_the_card_approvable(client, monkeypatch):
+    """The claim and the dispatch it authorises commit together.
+
+    This is the failure the claim itself introduces: if a claim could outlive
+    a dispatch that never happened, the card would be terminal with nothing
+    executed -- a lost approval, which is harder to notice than a duplicate
+    one. Sharing a transaction means the claim dies with the dispatch.
+    """
+    import timeline_server as server
+
+    item = _create(client, actions=[{"id": "approve", "label": "Approve"}])
+
+    def explode(*_args, **_kwargs):
+        raise RuntimeError("A2A write failed")
+
+    monkeypatch.setattr(server, "add_message", explode)
+    with pytest.raises(RuntimeError):
+        client.patch(f"/v1/timeline/items/{item['id']}", json={"action_id": "approve"})
+
+    # The claim must not have survived the rollback.
+    assert client.get(f"/v1/timeline/items/{item['id']}").json()["dispatched_action"] == ""
+
+    monkeypatch.undo()
+    retry = client.patch(f"/v1/timeline/items/{item['id']}", json={"action_id": "approve"})
+    assert retry.status_code == 200
+    assert _dispatch_count(client, item["id"]) == 1
+
+
+def test_an_ambiguous_action_id_is_refused_rather_than_guessed(client):
+    """A stored card can carry duplicate ids -- reads stay lenient so one bad
+    record cannot break a timeline. Dispatch must not be lenient: picking the
+    first match would execute a different action than the human chose."""
+    item = _create(client, actions=[{"id": "approve", "label": "Approve"}])
+
+    # Write duplicates straight to the store, bypassing the strict API check
+    # that stops them being created in the first place.
+    from storage_db import timeline_items, write_connection
+    from sqlalchemy import update as sql_update
+
+    with write_connection() as conn:
+        conn.execute(
+            sql_update(timeline_items)
+            .where(timeline_items.c.id == item["id"])
+            .values(
+                actions=[
+                    {"id": "approve", "label": "Approve Trade", "style": "neutral", "confirm": None},
+                    {"id": "approve", "label": "Approve Refund", "style": "neutral", "confirm": None},
+                ]
+            )
+        )
+
+    response = client.patch(f"/v1/timeline/items/{item['id']}", json={"action_id": "approve"})
+    assert response.status_code == 400
+    assert _dispatch_count(client, item["id"]) == 0
+    # And nothing was claimed, so the card is still recoverable by a surface
+    # that sends an unambiguous action.
+    assert client.get(f"/v1/timeline/items/{item['id']}").json()["dispatched_action"] == ""

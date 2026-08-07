@@ -6,12 +6,19 @@
 
 Deploy **four services** from this same repository:
 
-| Service | Start command |
-|---|---|
-| `mcp-server` | `python server.py` |
-| `timeline-server` | `python timeline_server.py` |
-| `listener` | `python listener.py` |
-| `mcp-dispatcher` | `python mcp_dispatcher.py` |
+| Service name | Start command | Runs |
+|---|---|---|
+| `mcp-server` | `python server.py` | MCP tools over the X API |
+| `timeline-server` | `python timeline_server.py` | Timeline + A2A API and the `/ui` approval surface |
+| `listener` | `python listener.py` | X mention poller |
+| `mcp-dispatcher` | `python mcp_dispatcher.py` | Timeline action executor |
+
+**The service name is load-bearing.** Railway will start this repo with
+`uvicorn main:app` unless you set a start command, and `main.py` picks what to
+run from `RAILWAY_SERVICE_NAME`. A name it does not recognise yields a
+container that answers `/health` and runs no worker at all, which looks
+healthy. Either set the start commands above, or name each service exactly as
+in the first column.
 
 Add a Railway Postgres plugin, then set the **same** `DATABASE_URL` on all four services.
 

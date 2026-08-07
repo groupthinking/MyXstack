@@ -10,13 +10,13 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from a2a_store import add_message, get_agent, list_agents, list_messages, register_agent
 from cards import Block, CardAction, DuplicateActionIdError, normalize_actions, resolve_action
+from storage_db import write_connection
 from timeline_store import (
     add_item,
     claim_action,
     delete_item,
     get_item,
     list_items,
-    release_action_claim,
     update_item,
 )
 
@@ -234,39 +234,48 @@ def patch_item(item_id: str, updates: TimelineItemUpdate) -> Dict[str, Any]:
                     detail=f"Card does not offer action '{action}'",
                 )
 
-        data["action"] = action
+        # `action` is deliberately not written into `data`: update_item does
+        # not persist it, and the dispatched action is recorded by the claim
+        # as `dispatched_action`. Assigning it here only looked like storage.
 
-        # Claim before anything is written or dispatched. Validating that the
-        # card offers the action does not make approval single-shot -- every
-        # concurrent caller passes that same check -- so without this a
-        # double-click, two surfaces, or a retried request each dispatch the
-        # action again, and the member executes the trade once per request.
-        if not claim_action(item_id, action):
-            current = get_item(item_id) or {}
+        # Claim and dispatch in ONE transaction. Validating that the card
+        # offers the action does not make approval single-shot -- every
+        # concurrent caller passes that same check -- so without a claim a
+        # double-click, two surfaces, or a retried request each dispatch
+        # again and the member executes the trade once per request.
+        #
+        # They commit together deliberately. A claim taken in its own
+        # transaction turns a duplicate-dispatch bug into a lost-dispatch
+        # one: kill the process in the gap and the card is claimed with
+        # nothing dispatched -- terminal, unrecoverable, and silent until a
+        # human asks why the trade never happened. Sharing the transaction
+        # means a crash rolls back both and the card stays approvable.
+        if not updates.status:
+            data["status"] = action.lower()
+        # The dispatched message carries the status the action produces, which
+        # is what it had before this endpoint started writing it separately.
+        dispatched_card = {**current, "status": data.get("status", current.get("status"))}
+
+        with write_connection() as conn:
+            claimed = claim_action(item_id, action, conn=conn)
+            if claimed:
+                _dispatch_action(dispatched_card, action, conn=conn)
+
+        # Raised outside the transaction: reading the card needs its own
+        # connection, and taking one while holding a write lock is how SQLite
+        # deadlocks.
+        if not claimed:
+            already = (get_item(item_id) or {}).get("dispatched_action")
             raise HTTPException(
                 status_code=409,
-                detail=(
-                    f"Card already dispatched "
-                    f"'{current.get('dispatched_action') or 'an action'}'"
-                ),
+                detail=f"Card already dispatched '{already or 'an action'}'",
             )
 
-    if action and not updates.status:
-        data["status"] = action.lower()
-
+    # The dispatch has already been recorded above; this only reflects the
+    # action in the card's own fields, so a failure here cannot lose it.
     item = update_item(item_id, data)
     if not item:
-        if action:
-            release_action_claim(item_id)
         raise HTTPException(status_code=404, detail="Item not found")
-    if action:
-        try:
-            _dispatch_action(item, action)
-        except Exception:
-            # The claim exists to stop a second dispatch, not to make a card
-            # that never dispatched permanently unapprovable.
-            release_action_claim(item_id)
-            raise
     return item
 
 
@@ -317,7 +326,7 @@ if UI_DIR.is_dir():
     app.mount("/ui", StaticFiles(directory=str(UI_DIR), html=True), name="ui")
 
 
-def _dispatch_action(item: Dict[str, Any], action: str) -> None:
+def _dispatch_action(item: Dict[str, Any], action: str, *, conn=None) -> None:
     target_agent = os.getenv("TIMELINE_ACTION_AGENT", "mcp-orchestrator")
     add_message(
         {
@@ -330,7 +339,8 @@ def _dispatch_action(item: Dict[str, Any], action: str) -> None:
                 "action": action,
                 "status": item.get("status"),
             },
-        }
+        },
+        conn=conn,
     )
 
 

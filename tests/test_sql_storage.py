@@ -10,7 +10,13 @@ import pytest
 import a2a_store
 import timeline_store
 from scripts.migrate_json_to_sql import migrate
-from storage_db import get_engine, metadata, normalize_database_url, reset_engine_for_tests
+from storage_db import (
+    get_engine,
+    metadata,
+    normalize_database_url,
+    reset_engine_for_tests,
+    timeline_items,
+)
 
 # Every column added to timeline_items after #125 shipped the SQL layer. These
 # are what a database created by that revision is missing, so they define both
@@ -18,6 +24,13 @@ from storage_db import get_engine, metadata, normalize_database_url, reset_engin
 # Keep in step with storage_db.timeline_items -- a column added there and not
 # here silently stops being covered.
 COLUMNS_ADDED_SINCE_THE_SQL_LAYER_LANDED = {"blocks", "schema_version", "dispatched_action"}
+
+# A rename is worse than an addition: the stale name lingers here, the legacy
+# table keeps a column that no longer exists, and both upgrade tests pass while
+# testing nothing.
+assert COLUMNS_ADDED_SINCE_THE_SQL_LAYER_LANDED <= {c.name for c in timeline_items.columns}, (
+    "a column named here no longer exists on storage_db.timeline_items"
+)
 
 
 @pytest.fixture()
@@ -242,23 +255,8 @@ def test_a_database_predating_the_card_columns_is_upgraded_in_place(tmp_path, mo
 
     url = os.getenv("TEST_DATABASE_URL") or f"sqlite:///{tmp_path / 'old.db'}"
 
-    # The table exactly as the previous revision defined it: every current
-    # column except the two this change adds. Copying the real Column objects
-    # keeps the DDL dialect-correct instead of stringly-typed.
-    legacy_meta = MetaData()
-    Table(
-        timeline_items.name,
-        legacy_meta,
-        *[
-            Column(c.name, c.type, primary_key=c.primary_key, nullable=c.nullable)
-            for c in timeline_items.columns
-            if c.name not in COLUMNS_ADDED_SINCE_THE_SQL_LAYER_LANDED
-        ],
-    )
-
+    legacy_meta = _make_legacy_table(url)
     bootstrap = create_engine(normalize_database_url(url), future=True)
-    legacy_meta.drop_all(bootstrap)
-    legacy_meta.create_all(bootstrap)
     with bootstrap.begin() as conn:
         conn.execute(
             legacy_meta.tables[timeline_items.name].insert().values(
@@ -293,8 +291,12 @@ def test_a_database_predating_the_card_columns_is_upgraded_in_place(tmp_path, mo
 
 
 def _make_legacy_table(url):
-    """The timeline_items table as the revision before blocks/schema_version
-    defined it."""
+    """Build timeline_items as the revision before this branch defined it.
+
+    One definition of "the schema before these columns", used by every upgrade
+    test. Two copies would drift, and the test that drifted would quietly stop
+    testing the schema it names. Returns the MetaData -- the engine it used is
+    disposed here, so returning that would hand back a dead one."""
     from sqlalchemy import Column, MetaData, Table, create_engine
 
     from storage_db import normalize_database_url, timeline_items
@@ -313,7 +315,7 @@ def _make_legacy_table(url):
     legacy.drop_all(engine)
     legacy.create_all(engine)
     engine.dispose()
-    return engine
+    return legacy
 
 
 def test_concurrent_startups_do_not_collide_on_the_column_upgrade(tmp_path, monkeypatch):
@@ -433,3 +435,55 @@ def test_a_first_deploy_boots_every_service_against_an_empty_database(tmp_path, 
     ids = [agent["id"] for agent in a2a_store.list_agents()]
     assert len(ids) == len(set(ids)), f"an agent was seeded twice: {ids}"
     reset_engine_for_tests()
+
+
+def test_a_corrupt_json_store_fails_the_migration_instead_of_reporting_success(
+    db_url, tmp_path, monkeypatch
+):
+    """`inserted=0` under a "Migration complete" banner is how an operator
+    decides it is safe to delete the JSON store. A file this cannot read must
+    not produce that message."""
+    from scripts.migrate_json_to_sql import migrate
+
+    corrupt = tmp_path / "timeline.json"
+    corrupt.write_text('{"items": [{"id": "a"', encoding="utf-8")  # truncated write
+    monkeypatch.setenv("TIMELINE_STORE_PATH", str(corrupt))
+    monkeypatch.setenv("A2A_STORE_PATH", str(tmp_path / "missing.json"))
+
+    with pytest.raises(json.JSONDecodeError):
+        migrate()
+
+
+def test_an_unreadable_timestamp_fails_rather_than_becoming_now(db_url, tmp_path, monkeypatch):
+    """Substituting now() reorders the timeline silently."""
+    from scripts.migrate_json_to_sql import migrate
+
+    path = tmp_path / "timeline.json"
+    path.write_text(
+        json.dumps({"items": [{"id": "a", "title": "t", "created_at": "not-a-date"}]}),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("TIMELINE_STORE_PATH", str(path))
+    monkeypatch.setenv("A2A_STORE_PATH", str(tmp_path / "missing.json"))
+
+    with pytest.raises(ValueError, match="unparsable created_at"):
+        migrate()
+
+
+def test_re_running_the_migration_does_not_move_created_at(db_url, tmp_path, monkeypatch):
+    from scripts.migrate_json_to_sql import migrate
+
+    path = tmp_path / "timeline.json"
+    path.write_text(
+        json.dumps(
+            {"items": [{"id": "a", "title": "t", "created_at": "2024-01-01T00:00:00+00:00"}]}
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("TIMELINE_STORE_PATH", str(path))
+    monkeypatch.setenv("A2A_STORE_PATH", str(tmp_path / "missing.json"))
+
+    migrate()
+    first = timeline_store.get_item("a")["created_at"]
+    migrate()
+    assert timeline_store.get_item("a")["created_at"] == first

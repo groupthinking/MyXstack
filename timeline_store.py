@@ -2,6 +2,7 @@ import uuid
 from typing import Any, Dict, List, Optional
 
 from sqlalchemy import delete, insert, select, update
+from sqlalchemy.engine import Connection
 
 from cards import SCHEMA_VERSION, derive_body, normalize_actions, normalize_card
 from storage_db import (
@@ -119,7 +120,7 @@ def delete_item(item_id: str) -> bool:
         return result.rowcount > 0
 
 
-def claim_action(item_id: str, action: str) -> bool:
+def claim_action(item_id: str, action: str, *, conn: Optional[Connection] = None) -> bool:
     """Claim this card's one dispatch, atomically. True only for the winner.
 
     Approval is single-shot: a card carries an action to a member exactly
@@ -133,28 +134,21 @@ def claim_action(item_id: str, action: str) -> bool:
     succeed for one caller, whatever the interleaving, and it holds across
     processes -- which matters because several timeline-server replicas may
     serve the same card.
+
+    Pass `conn` to run inside a caller's transaction. The approval path does,
+    so the claim and the dispatch it authorises commit together. Claiming in
+    its own transaction would mean a process killed in the gap -- SIGKILL, an
+    OOM, a container rolling -- leaves a card claimed with nothing dispatched:
+    terminal, unrecoverable, and silent, which is worse than the duplicate
+    dispatch the claim exists to prevent.
     """
-    with write_connection() as conn:
-        result = conn.execute(
-            update(timeline_items)
-            .where(timeline_items.c.id == item_id)
-            .where(timeline_items.c.dispatched_action == "")
-            .values(dispatched_action=action, updated_at=utc_now())
-        )
-        return result.rowcount == 1
-
-
-def release_action_claim(item_id: str) -> None:
-    """Undo a claim whose dispatch never happened.
-
-    Dispatch can fail after the claim is taken (the A2A write throws). Left
-    alone, that card would be permanently unapprovable -- terminal without
-    anything having run. Releasing keeps a failed approval retryable, which
-    is the same rule the dispatcher already follows for failed execution.
-    """
-    with write_connection() as conn:
-        conn.execute(
-            update(timeline_items)
-            .where(timeline_items.c.id == item_id)
-            .values(dispatched_action="")
-        )
+    statement = (
+        update(timeline_items)
+        .where(timeline_items.c.id == item_id)
+        .where(timeline_items.c.dispatched_action == "")
+        .values(dispatched_action=action, updated_at=utc_now())
+    )
+    if conn is not None:
+        return conn.execute(statement).rowcount == 1
+    with write_connection() as own_conn:
+        return own_conn.execute(statement).rowcount == 1

@@ -270,13 +270,22 @@ def normalize_card(item: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
 def resolve_action(item: Optional[Dict[str, Any]], action_id: str) -> Optional[str]:
     """Map an action id back to the label team members match on.
 
-    Returns None when the card has no such action — the caller must treat
+    Returns None when the card has no such action -- the caller must treat
     that as a rejected request rather than inventing a label, or a surface
-    could trigger an action the card never offered."""
-    card = normalize_card(item)
-    if not card:
+    could trigger an action the card never offered.
+
+    Also returns None when the id is ambiguous. Reads stay lenient about
+    duplicate ids so one bad historical record cannot make a timeline
+    unreadable, but "lenient" must stop at the dispatch boundary: picking the
+    first match would execute a different action than the human selected, and
+    silently. Unresolvable is the safe answer -- the API turns it into a 400
+    and nothing is claimed or dispatched.
+    """
+    if item is None:
         return None
-    for action in card.get("actions") or []:
-        if action.get("id") == action_id:
-            return action.get("label")
-    return None
+    matches = [
+        action.get("label")
+        for action in normalize_actions(item.get("actions"))
+        if action.get("id") == action_id
+    ]
+    return matches[0] if len(matches) == 1 else None

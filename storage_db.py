@@ -26,6 +26,11 @@ from sqlalchemy.exc import DBAPIError
 DEFAULT_DB_PATH = Path("~/.xmcp/xmcp.db").expanduser()
 SQLITE_BUSY_TIMEOUT_MS = int(os.getenv("SQLITE_BUSY_TIMEOUT_MS", "5000"))
 
+# Literal SQL defaults for backfilling NOT NULL columns onto existing rows.
+# A NOT NULL column added without one cannot be applied to a populated table,
+# so a missing entry here is a programming error rather than a default.
+_BACKFILL_DEFAULTS = {"blocks": "'[]'", "schema_version": "''", "dispatched_action": "''"}
+
 # Bounded, because losing the create race is expected and transient: the retry
 # only has to outlast another process committing its CREATE TABLE.
 _SCHEMA_CREATE_ATTEMPTS = 3
@@ -167,13 +172,26 @@ def _add_missing_columns(engine: Engine) -> None:
     type_compiler = engine.dialect.type_compiler_instance
     preparer = engine.dialect.identifier_preparer
     for column in missing:
-        # Existing rows need a value for a NOT NULL column, so every
-        # backfillable column added here carries a constant default.
-        default = "'[]'" if column.name == "blocks" else "''"
+        # Read the intent off the Column rather than hardcoding it. Every
+        # column added so far happens to be String/JSON and NOT NULL, and a
+        # blanket "NOT NULL DEFAULT ''" works only for those: a DateTime would
+        # be rejected by Postgres and silently store garbage in SQLite, and a
+        # nullable column would be forced NOT NULL against its own definition.
+        # This path exists for legacy databases, so that lands on startup in
+        # production rather than in a fresh test database.
+        constraint = ""
+        if not column.nullable:
+            default = _BACKFILL_DEFAULTS.get(column.name)
+            if default is None:
+                raise RuntimeError(
+                    f"{timeline_items.name}.{column.name} is NOT NULL with no backfill "
+                    "default; existing rows need one -- add it to _BACKFILL_DEFAULTS"
+                )
+            constraint = f" NOT NULL DEFAULT {default}"
         statement = text(
             f"ALTER TABLE {preparer.format_table(timeline_items)} "
             f"ADD COLUMN {preparer.quote(column.name)} "
-            f"{type_compiler.process(column.type)} NOT NULL DEFAULT {default}"
+            f"{type_compiler.process(column.type)}{constraint}"
         )
         try:
             with engine.begin() as conn:

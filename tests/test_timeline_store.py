@@ -102,3 +102,42 @@ def test_metadata_updates_merge_rather_than_replace(store):
     updated = store.update_item(item["id"], {"metadata": {"processed_action": "Approve"}})
     assert updated["metadata"]["agent_id"] == "tradedesk"
     assert updated["metadata"]["processed_action"] == "Approve"
+
+
+def test_only_one_of_many_concurrent_claims_wins(store):
+    """`claim_action` is the whole single-shot guarantee, so it is worth
+    testing at the store level and not only through the API."""
+    import threading
+
+    item = store.add_item({"title": "t", "body": "b", "actions": ["Approve"]})
+
+    workers = 8
+    barrier = threading.Barrier(workers)
+    results = []
+    lock = threading.Lock()
+
+    def claim():
+        barrier.wait(timeout=30)
+        won = store.claim_action(item["id"], "Approve")
+        with lock:
+            results.append(won)
+
+    threads = [threading.Thread(target=claim) for _ in range(workers)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=60)
+
+    assert results.count(True) == 1, f"expected exactly one winner, got {results}"
+    assert store.get_item(item["id"])["dispatched_action"] == "Approve"
+
+
+def test_a_claim_is_per_card_not_per_action(store):
+    item = store.add_item({"title": "t", "body": "b", "actions": ["Approve", "Reject"]})
+    assert store.claim_action(item["id"], "Approve") is True
+    # A different action on an already-dispatched card must not get through.
+    assert store.claim_action(item["id"], "Reject") is False
+
+
+def test_claiming_a_card_that_does_not_exist_fails_rather_than_raising(store):
+    assert store.claim_action("no-such-card", "Approve") is False
