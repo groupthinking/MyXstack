@@ -3,6 +3,7 @@ import uuid
 from typing import Any, Dict, List, Optional
 
 from sqlalchemy import insert, select, update
+from sqlalchemy.exc import IntegrityError
 
 from storage_db import (
     a2a_agents,
@@ -81,21 +82,32 @@ def _ensure_default_agents() -> None:
         if _SEEDED_ENGINE is engine:
             return
 
-        with write_connection() as conn:
+        with read_connection() as conn:
             existing_ids = {
                 row[0]
                 for row in conn.execute(select(a2a_agents.c.id).where(a2a_agents.c.id.in_([a["id"] for a in DEFAULT_AGENTS])))
             }
 
-            for agent in DEFAULT_AGENTS:
-                if agent["id"] in existing_ids:
-                    continue
-                conn.execute(
-                    insert(a2a_agents).values(
-                        **agent,
-                        created_at=utc_now(),
+        for agent in DEFAULT_AGENTS:
+            if agent["id"] in existing_ids:
+                continue
+            # _SEED_LOCK only covers threads in this process, and every service
+            # seeds on boot against the same database. On SQLite the writers
+            # serialize, but Postgres runs this at READ COMMITTED, so the check
+            # above can be stale by the time the insert lands. Losing that race
+            # means another service already created the agent, which is the
+            # desired end state -- so each insert stands alone (an error would
+            # otherwise poison a shared transaction) and a duplicate is fine.
+            try:
+                with write_connection() as conn:
+                    conn.execute(
+                        insert(a2a_agents).values(
+                            **agent,
+                            created_at=utc_now(),
+                        )
                     )
-                )
+            except IntegrityError:
+                pass
 
         _SEEDED_ENGINE = engine
 

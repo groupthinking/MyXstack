@@ -1,4 +1,5 @@
 import json
+import multiprocessing
 import os
 import threading
 from pathlib import Path
@@ -364,3 +365,64 @@ def test_a_real_migration_failure_is_not_swallowed():
     assert _is_duplicate_column(duplicate) is True
     assert _is_duplicate_column(sqlite_duplicate) is True
     assert _is_duplicate_column(unrelated) is False
+
+
+def _boot_one_service(url, queue):
+    """A whole service starting: fresh interpreter, its own engine, its own
+    module state. Must run in a separate *process* -- threads share
+    `_ENGINE_LOCK`, `_SEED_LOCK` and the cached engine, which serializes
+    exactly the steps whose cross-process race this is testing.
+    """
+    import os
+    import sys
+
+    sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    os.environ["DATABASE_URL"] = url
+    try:
+        import a2a_store
+        import storage_db
+
+        storage_db.reset_engine_for_tests()
+        storage_db.get_engine()          # create_all
+        a2a_store.list_agents()          # seeds DEFAULT_AGENTS
+        queue.put(None)
+    except BaseException as exc:  # noqa: BLE001 - reported via the queue
+        queue.put(f"{type(exc).__name__}: {str(exc)[:200]}")
+
+
+def test_a_first_deploy_boots_every_service_against_an_empty_database(tmp_path, monkeypatch):
+    """The first deploy: empty database, all four services starting at once.
+
+    Two reflect-then-write races meet here. `create_all` checks which tables
+    exist before creating them, and the DEFAULT_AGENTS seed checks which agents
+    exist before inserting them -- neither check is a lock, and on Postgres
+    (READ COMMITTED) both can be stale by the time the write lands. SQLite
+    hides this because its writers serialize, so it only bites on the
+    production backend.
+    """
+    from storage_db import get_engine, reset_engine_for_tests
+
+    url = os.getenv("TEST_DATABASE_URL") or f"sqlite:///{tmp_path / 'fresh.db'}"
+    monkeypatch.setenv("DATABASE_URL", url)
+
+    # Start from genuinely nothing, the way a newly provisioned database is.
+    reset_engine_for_tests()
+    metadata.drop_all(get_engine())
+    reset_engine_for_tests()
+
+    workers = 4
+    ctx = multiprocessing.get_context("spawn")
+    queue = ctx.Queue()
+    procs = [ctx.Process(target=_boot_one_service, args=(url, queue)) for _ in range(workers)]
+    for proc in procs:
+        proc.start()
+    for proc in procs:
+        proc.join(timeout=120)
+
+    failures = [msg for msg in (queue.get(timeout=30) for _ in range(workers)) if msg]
+    assert failures == [], f"{len(failures)}/{workers} services failed to boot: {failures[0]}"
+
+    reset_engine_for_tests()
+    ids = [agent["id"] for agent in a2a_store.list_agents()]
+    assert len(ids) == len(set(ids)), f"an agent was seeded twice: {ids}"
+    reset_engine_for_tests()

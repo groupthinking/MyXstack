@@ -1,5 +1,6 @@
 import os
 import threading
+import time
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
@@ -24,6 +25,11 @@ from sqlalchemy.exc import DBAPIError
 
 DEFAULT_DB_PATH = Path("~/.xmcp/xmcp.db").expanduser()
 SQLITE_BUSY_TIMEOUT_MS = int(os.getenv("SQLITE_BUSY_TIMEOUT_MS", "5000"))
+
+# Bounded, because losing the create race is expected and transient: the retry
+# only has to outlast another process committing its CREATE TABLE.
+_SCHEMA_CREATE_ATTEMPTS = 3
+_SCHEMA_RETRY_DELAY_S = 0.25
 
 _ENGINE: Optional[Engine] = None
 _ENGINE_LOCK = threading.Lock()
@@ -173,6 +179,31 @@ def _add_missing_columns(engine: Engine) -> None:
                 raise
 
 
+def _create_tables(engine: Engine) -> None:
+    """Create the schema, tolerating another service creating it concurrently.
+
+    `create_all` checks which tables exist and then creates the rest, which is
+    the same reflect-then-write race as `_add_missing_columns` -- and it bites
+    harder, because it happens on the *first* deploy against an empty database
+    with every service booting at once. Postgres fails the loser with a unique
+    violation on its own catalog rather than anything table-specific, so the
+    resolution is to ask whether the schema is there now: if it is, whoever
+    created it did the job.
+    """
+    expected = set(metadata.tables)
+    for attempt in range(_SCHEMA_CREATE_ATTEMPTS):
+        try:
+            metadata.create_all(engine)
+            return
+        except DBAPIError:
+            # Reflect fresh -- the winner may still have been committing.
+            if expected <= set(inspect(engine).get_table_names()):
+                return
+            if attempt == _SCHEMA_CREATE_ATTEMPTS - 1:
+                raise
+            time.sleep(_SCHEMA_RETRY_DELAY_S * (attempt + 1))
+
+
 def _create_engine() -> Engine:
     database_url = get_database_url()
     connect_args: Dict[str, Any] = {}
@@ -181,7 +212,7 @@ def _create_engine() -> Engine:
     engine = create_engine(database_url, future=True, pool_pre_ping=True, connect_args=connect_args)
     if database_url.startswith("sqlite://"):
         _configure_sqlite(engine)
-    metadata.create_all(engine)
+    _create_tables(engine)
     _add_missing_columns(engine)
     return engine
 
