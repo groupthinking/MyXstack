@@ -67,7 +67,16 @@ def enforce_token_policy() -> None:
 
     Local development stays frictionless: with no deployment marker set,
     an empty token only warns. `TIMELINE_ALLOW_INSECURE=1` is the explicit
-    escape hatch for deliberately running a deployment open."""
+    escape hatch for deliberately running a deployment open.
+
+    KNOWN GAP: this is a heuristic, and it only recognises Railway and
+    Kubernetes. A VPS, Fly, Render, or a bare `docker compose` on a public
+    host sets none of these markers, so an empty token there warns instead of
+    refusing -- and the approval API is reachable anonymously. Fixing that
+    properly means inverting the default (always fatal, opt out explicitly
+    for local), which trades a silent gap for a one-time startup error on a
+    fresh checkout. That trade is a product call, so it is deliberately left
+    open rather than made here; see the PR discussion."""
     if os.getenv("TIMELINE_API_TOKEN", "").strip():
         return
 

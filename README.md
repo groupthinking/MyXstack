@@ -157,6 +157,14 @@ runs at import time, so it applies to every entrypoint including
 `timeline_server.main()`. Set `TIMELINE_ALLOW_INSECURE=1` to override
 deliberately. Without a deployment marker, an empty token only warns.
 
+**That detection is a heuristic with a known gap.** Only Railway and
+Kubernetes are recognised. A VPS, Fly, Render, or `docker compose` on a public
+host sets none of those markers, so an empty token there warns rather than
+refusing — and the approval API is reachable anonymously. Set
+`TIMELINE_API_TOKEN` yourself on any host not in that list. Closing the gap
+means inverting the default (always fatal, opt out explicitly for local),
+which is a deliberate open question rather than an oversight.
+
 ```bash
 export TIMELINE_API_TOKEN="$(openssl rand -hex 32)"   # export: make run needs it in the child env
 ```
