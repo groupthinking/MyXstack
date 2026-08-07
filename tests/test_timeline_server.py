@@ -121,6 +121,82 @@ def test_action_id_on_a_missing_card_is_404(client):
     assert response.status_code == 404
 
 
+def _dispatched_actions(client):
+    messages = client.get("/v1/a2a/agents/mcp-orchestrator/messages").json()["messages"]
+    return [m["metadata"].get("action") for m in messages if m["type"] == "timeline_action"]
+
+
+def test_bare_action_label_the_card_never_offered_is_refused(client):
+    # The legacy `action` path must be validated too — guarding only
+    # `action_id` would leave this wide open while looking closed.
+    item = _create(client)
+    response = client.patch(
+        f"/v1/timeline/items/{item['id']}", json={"action": "Delete Everything"}
+    )
+    assert response.status_code == 400
+    assert _dispatched_actions(client) == []
+
+
+def test_bare_action_label_on_a_card_with_no_actions_is_refused(client):
+    item = _create(client, actions=[])
+    response = client.patch(f"/v1/timeline/items/{item['id']}", json={"action": "Approve"})
+    assert response.status_code == 400
+    assert _dispatched_actions(client) == []
+
+
+def test_action_label_contradicting_action_id_is_refused(client):
+    item = _create(
+        client,
+        actions=[{"id": "approve", "label": "Approve"}, {"id": "reject", "label": "Reject"}],
+    )
+    response = client.patch(
+        f"/v1/timeline/items/{item['id']}",
+        json={"action_id": "approve", "action": "Reject"},
+    )
+    assert response.status_code == 400
+    assert _dispatched_actions(client) == []
+
+
+def test_matching_action_and_action_id_are_accepted(client):
+    item = _create(client, actions=[{"id": "approve", "label": "Approve"}])
+    response = client.patch(
+        f"/v1/timeline/items/{item['id']}",
+        json={"action_id": "approve", "action": "Approve"},
+    )
+    assert response.status_code == 200
+    assert _dispatched_actions(client) == ["Approve"]
+
+
+def test_duplicate_action_ids_are_rejected_at_creation(client):
+    response = client.post(
+        "/v1/timeline/items",
+        json={
+            "title": "x",
+            "actions": [
+                {"id": "approve", "label": "Approve Purchase"},
+                {"id": "approve", "label": "Approve Trade"},
+            ],
+        },
+    )
+    assert response.status_code == 422
+
+
+def test_unsafe_link_url_is_rejected_at_creation(client):
+    response = client.post(
+        "/v1/timeline/items",
+        json={
+            "title": "x",
+            "blocks": [
+                {
+                    "type": "links",
+                    "links": [{"label": "click", "url": "javascript:alert(1)"}],
+                }
+            ],
+        },
+    )
+    assert response.status_code == 422
+
+
 # --- auth ------------------------------------------------------------------
 
 

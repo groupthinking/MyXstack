@@ -1,0 +1,36 @@
+name: "🐍 Python Tests"
+
+# A gate that can actually fail.
+#
+# agent-ci.yml's auto-detect job never runs this suite: it checks for
+# package.json before the Python branch, and MyXstack has one (the TypeScript
+# agent in src/), so it classifies this repo as "node". Its Python step is
+# also `pytest ... 2>/dev/null || true` under continue-on-error, so it could
+# not fail even if it were reached. This job exists to close that gap and is
+# deliberately free of `|| true`, `2>/dev/null`, and continue-on-error.
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  pytest:
+    name: pytest
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          # Matches the Dockerfile (python:3.12-slim), which is what ships.
+          python-version: '3.12'
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt -r requirements-dev.txt
+
+      - name: Run tests
+        run: pytest -q

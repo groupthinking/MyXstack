@@ -15,6 +15,8 @@ from typing import Any, Dict, List, Optional
 
 import requests
 
+from cards import is_safe_url
+
 KIND_AGENT = "agent"
 KIND_BOT = "bot"
 
@@ -131,12 +133,19 @@ def table_block(
 def links_block(
     links: List[Dict[str, str]], label: Optional[str] = None
 ) -> Dict[str, Any]:
-    """A list of sources or destinations."""
-    return {
-        "type": "links",
-        "label": label,
-        "links": [{"label": str(l["label"]), "url": str(l["url"])} for l in links],
-    }
+    """A list of sources or destinations.
+
+    Non-http(s) URLs are dropped here rather than passed along: card content
+    is derived from model output over untrusted mentions, and the approval
+    surface renders these into an anchor's href."""
+    safe = []
+    for link in links:
+        url = str(link["url"])
+        if not is_safe_url(url):
+            print(f"Dropping unsafe card link URL: {url!r}", flush=True)
+            continue
+        safe.append({"label": str(link["label"]), "url": url})
+    return {"type": "links", "label": label, "links": safe}
 
 
 def approve_reject(

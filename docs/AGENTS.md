@@ -116,12 +116,19 @@ pass no `actions` and the surface renders them without buttons.
   no payment adapter ships with the repo.
 - **Actions are approval-gated.** Cards with side effects require a human
   action on the timeline before the dispatcher executes anything.
-- **Approvals are authenticated** when `TIMELINE_API_TOKEN` is set. It is
-  empty by default for local use, and the timeline server warns at startup
-  when it is — set it before exposing the service, or anyone who can reach
-  the port can approve agent actions.
-- **A surface can only trigger actions the card offers.** Posting an
-  `action_id` the card doesn't carry is rejected with a 400.
+- **Approvals are authenticated** when `TIMELINE_API_TOKEN` is set. It is empty
+  by default for local use. On a deployment (detected via `RAILWAY_SERVICE_NAME`
+  and friends) an empty token makes the app refuse to start rather than serve
+  approvals anonymously; the check runs at import time so it covers every
+  entrypoint, including `uvicorn main:app`. `TIMELINE_ALLOW_INSECURE=1`
+  overrides it deliberately.
+- **A surface can only trigger actions the card offers.** Both an unknown
+  `action_id` and a bare `action` label the card doesn't carry are rejected
+  with a 400, and nothing is dispatched. Sending an `action` that contradicts
+  the supplied `action_id` is also a 400.
+- **Card links are http(s) only.** `links_block` drops other schemes and the
+  API rejects them, because card content derives from model output over
+  untrusted mentions and lands in the approval UI's DOM.
 
 ## X API Exhibit
 

@@ -31,12 +31,31 @@ is no on-disk migration.
 
 import re
 from typing import Annotated, Any, Dict, List, Literal, Optional, Union
+from urllib.parse import urlparse
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 SCHEMA_VERSION = 2
 
 BLOCK_TYPES = ("text", "facts", "table", "links")
+
+# Only these schemes may reach an anchor's href. Anything else — javascript:,
+# data:, vbscript: — executes in the approval surface's origin.
+SAFE_URL_SCHEMES = ("http", "https")
+
+
+def is_safe_url(value: Any) -> bool:
+    """True when `value` is an http(s) URL safe to render as a link.
+
+    Shared by the Link model, the agents/base.py builder, and (mirrored) the
+    browser renderer, so all three agree on what a renderable URL is."""
+    if not isinstance(value, str):
+        return False
+    try:
+        parsed = urlparse(value.strip())
+    except ValueError:
+        return False
+    return parsed.scheme.lower() in SAFE_URL_SCHEMES and bool(parsed.netloc)
 
 
 # --------------------------------------------------------------------------
@@ -50,8 +69,24 @@ class Fact(BaseModel):
 
 
 class Link(BaseModel):
+    """A labelled hyperlink.
+
+    `url` is restricted to http(s). Card content originates from model output
+    over untrusted X mentions and is rendered into an anchor's href, so a
+    `javascript:` or `data:` URL would execute in the approval surface's
+    origin — where the bearer token that authorizes agent actions lives."""
+
     label: str
     url: str
+
+    @field_validator("url")
+    @classmethod
+    def _safe_scheme(cls, value: str) -> str:
+        if not is_safe_url(value):
+            raise ValueError(
+                f"unsupported URL scheme in {value!r}: only http and https are allowed"
+            )
+        return value
 
 
 class TextBlock(BaseModel):
@@ -162,9 +197,21 @@ def derive_body(blocks: List[Dict[str, Any]]) -> str:
     return "\n\n".join(_render_block(b) for b in blocks if b)
 
 
-def normalize_actions(actions: Any) -> List[Dict[str, Any]]:
+class DuplicateActionIdError(ValueError):
+    """Raised when a card offers two actions with the same id.
+
+    `resolve_action` returns the first match, so duplicate ids would make a
+    surface dispatch a different action than the human selected, and leave
+    the later button permanently unreachable."""
+
+
+def normalize_actions(actions: Any, *, strict: bool = False) -> List[Dict[str, Any]]:
     """Coerce either legacy `["Approve", "Reject"]` or typed action dicts
-    into a uniform list of action dicts."""
+    into a uniform list of action dicts.
+
+    strict=True rejects duplicate ids — used when accepting a new card at
+    the API boundary. Reads of already-stored cards stay lenient so one bad
+    historical record can't make the whole timeline unreadable."""
     if not isinstance(actions, list):
         return []
 
@@ -184,6 +231,18 @@ def normalize_actions(actions: Any) -> List[Dict[str, Any]]:
                     "confirm": action.get("confirm"),
                 }
             )
+
+    if strict:
+        seen = set()
+        for action in normalized:
+            action_id = action["id"]
+            if action_id in seen:
+                raise DuplicateActionIdError(
+                    f"duplicate action id {action_id!r}: each action on a card "
+                    "must be addressable on its own"
+                )
+            seen.add(action_id)
+
     return normalized
 
 

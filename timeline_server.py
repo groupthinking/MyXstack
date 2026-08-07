@@ -9,7 +9,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, Field
 
 from a2a_store import add_message, get_agent, list_agents, list_messages, register_agent
-from cards import Block, CardAction, resolve_action
+from cards import Block, CardAction, DuplicateActionIdError, normalize_actions, resolve_action
 from timeline_store import add_item, delete_item, get_item, list_items, update_item
 
 app = FastAPI(title="xMCP Timeline Service")
@@ -26,12 +26,57 @@ def _cors_origins() -> List[str]:
 # needed when a surface is hosted separately. Default to allowing none.
 _origins = _cors_origins()
 if _origins:
+    # No allow_credentials: this API authenticates with a bearer header, not
+    # cookies, so enabling credentialed CORS would widen exposure for nothing.
+    # Methods and headers are enumerated rather than wildcarded.
     app.add_middleware(
         CORSMiddleware,
         allow_origins=_origins,
-        allow_credentials=True,
-        allow_methods=["*"],
-        allow_headers=["*"],
+        allow_credentials=False,
+        allow_methods=["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
+        allow_headers=["Authorization", "Content-Type"],
+    )
+
+
+# Environment variables that indicate this process is a deployment rather
+# than someone's laptop. On a deployment an empty token is fatal, not a
+# warning — this API includes the PATCH that authorizes agent actions.
+_DEPLOY_MARKERS = ("RAILWAY_SERVICE_NAME", "RAILWAY_ENVIRONMENT", "KUBERNETES_SERVICE_HOST")
+
+
+def _is_deployment() -> bool:
+    return any(os.getenv(marker, "").strip() for marker in _DEPLOY_MARKERS)
+
+
+def enforce_token_policy() -> None:
+    """Refuse to serve approval routes anonymously on a deployment.
+
+    Called at import time so it applies to *every* entrypoint — including
+    `uvicorn main:app`, which imports `timeline_server.app` directly and
+    never runs `main()`. Putting this check only in `main()` would leave
+    the Railway path (main.py: `from timeline_server import app`) silently
+    unauthenticated, which is the one deployment that most needs it.
+
+    Local development stays frictionless: with no deployment marker set,
+    an empty token only warns. `TIMELINE_ALLOW_INSECURE=1` is the explicit
+    escape hatch for deliberately running a deployment open."""
+    if os.getenv("TIMELINE_API_TOKEN", "").strip():
+        return
+
+    if _is_deployment() and os.getenv("TIMELINE_ALLOW_INSECURE", "").strip() != "1":
+        raise RuntimeError(
+            "TIMELINE_API_TOKEN is not set but this looks like a deployment "
+            f"({', '.join(m for m in _DEPLOY_MARKERS if os.getenv(m, '').strip())}). "
+            "The /v1 approval endpoints authorize agent actions and would be "
+            "reachable anonymously. Set TIMELINE_API_TOKEN, or set "
+            "TIMELINE_ALLOW_INSECURE=1 to override deliberately."
+        )
+
+    print(
+        "WARNING: TIMELINE_API_TOKEN is not set — the timeline and A2A API "
+        "are unauthenticated. Anyone who can reach this port can approve "
+        "agent actions. Set it before exposing this service.",
+        flush=True,
     )
 
 
@@ -41,16 +86,17 @@ def require_token(authorization: Optional[str] = Header(None)) -> None:
     Read from the environment per request rather than at import time so
     tests (and a restarted process) see the current value.
 
-    When TIMELINE_API_TOKEN is unset the API stays open, which keeps local
-    `make run` working — but this endpoint set includes the approval PATCH
-    that authorizes agent actions, so an exposed deployment must set it.
-    `main()` warns loudly when it is missing."""
+    When TIMELINE_API_TOKEN is unset the API stays open for local use;
+    `enforce_token_policy()` makes that state fatal on a deployment."""
     expected = os.getenv("TIMELINE_API_TOKEN", "").strip()
     if not expected:
         return
     presented = authorization or ""
     if not secrets.compare_digest(presented, f"Bearer {expected}"):
         raise HTTPException(status_code=401, detail="Missing or invalid bearer token")
+
+
+enforce_token_policy()
 
 
 # /health deliberately stays outside this router: container and load-balancer
@@ -129,8 +175,15 @@ def get_item_by_id(item_id: str) -> Dict[str, Any]:
 
 @v1.post("/timeline/items")
 def create_item(payload: TimelineItemCreate) -> Dict[str, Any]:
-    item = add_item(payload.model_dump())
-    return item
+    data = payload.model_dump()
+    # Reject duplicate action ids before the card is stored: once persisted,
+    # resolve_action would silently pick the first match and the later button
+    # would be unreachable.
+    try:
+        normalize_actions(data.get("actions"), strict=True)
+    except DuplicateActionIdError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return add_item(data)
 
 
 @v1.patch("/timeline/items/{item_id}")
@@ -138,18 +191,41 @@ def patch_item(item_id: str, updates: TimelineItemUpdate) -> Dict[str, Any]:
     data = updates.model_dump(exclude_unset=True)
     action = updates.action
 
-    if updates.action_id and not action:
+    # Every dispatched action must be one the card actually offers — on BOTH
+    # paths. Validating only `action_id` would leave the legacy `action` label
+    # path able to dispatch anything, which is worse than no guard at all
+    # because the tests would make the endpoint look closed.
+    if updates.action_id or action:
         current = get_item(item_id)
         if not current:
             raise HTTPException(status_code=404, detail="Item not found")
-        action = resolve_action(current, updates.action_id)
-        # Fail closed: a surface must not be able to trigger an action the
-        # card never offered.
-        if not action:
-            raise HTTPException(
-                status_code=400,
-                detail=f"Card has no action '{updates.action_id}'",
-            )
+
+        if updates.action_id:
+            resolved = resolve_action(current, updates.action_id)
+            if not resolved:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Card has no action '{updates.action_id}'",
+                )
+            # A caller may send both; they must agree, or we cannot know
+            # which one the human actually chose.
+            if action and action != resolved:
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        f"action '{action}' does not match action_id "
+                        f"'{updates.action_id}' (which resolves to '{resolved}')"
+                    ),
+                )
+            action = resolved
+        else:
+            offered = {a.get("label") for a in current.get("actions") or []}
+            if action not in offered:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Card does not offer action '{action}'",
+                )
+
         data["action"] = action
 
     if action and not updates.status:
@@ -231,13 +307,8 @@ def main() -> None:
     host = os.getenv("TIMELINE_HOST", "0.0.0.0")
     port_value = os.getenv("PORT") or os.getenv("TIMELINE_PORT", "8080")
     port = int(port_value)
-    if not os.getenv("TIMELINE_API_TOKEN", "").strip():
-        print(
-            "WARNING: TIMELINE_API_TOKEN is not set — the timeline and A2A API "
-            "are unauthenticated. Anyone who can reach this port can approve "
-            "agent actions. Set it before exposing this service.",
-            flush=True,
-        )
+    # The token policy is enforced at import time (see enforce_token_policy),
+    # so it has already run for every entrypoint by the time we get here.
     import uvicorn
 
     uvicorn.run(app, host=host, port=port)

@@ -38,6 +38,22 @@ function setStatus(message, kind = "") {
   statusEl.className = `status ${kind}`;
 }
 
+// Mirrors is_safe_url() in cards.py. Only http(s) may reach an anchor's href —
+// a javascript: URL would run in this origin, where the approval token lives.
+function isSafeUrl(value) {
+  if (typeof value !== "string") return false;
+  try {
+    const scheme = new URL(value, window.location.href).protocol;
+    return scheme === "http:" || scheme === "https:";
+  } catch {
+    return false;
+  }
+}
+
+// Cards with a PATCH in flight. Prevents a double-click from sending two
+// competing actions before the first response lands.
+const inFlight = new Set();
+
 function el(tag, className, text) {
   const node = document.createElement(tag);
   if (className) node.className = className;
@@ -90,11 +106,17 @@ function renderBlock(block) {
       const list = el("ul", "links");
       (block.links || []).forEach((link) => {
         const item = el("li");
-        const anchor = el("a", null, link.label);
-        anchor.href = link.url;
-        anchor.rel = "noopener noreferrer";
-        anchor.target = "_blank";
-        item.appendChild(anchor);
+        if (isSafeUrl(link.url)) {
+          const anchor = el("a", null, link.label);
+          anchor.href = link.url;
+          anchor.rel = "noopener noreferrer";
+          anchor.target = "_blank";
+          item.appendChild(anchor);
+        } else {
+          // Defence in depth: the API rejects these too, but a stored card
+          // predating that validation must never become a live href.
+          item.appendChild(el("span", null, `${link.label} (unsafe link removed)`));
+        }
         list.appendChild(item);
       });
       wrap.appendChild(list);
@@ -159,8 +181,15 @@ function renderCard(item) {
 }
 
 async function takeAction(item, action) {
+  // Reject before sending, not after: a second PATCH would queue a competing
+  // action that the dispatcher then has to discard as already-processed.
+  if (inFlight.has(item.id)) {
+    setStatus("An action on this card is already in flight.", "err");
+    return;
+  }
   if (action.confirm && !window.confirm(action.confirm)) return;
 
+  inFlight.add(item.id);
   setStatus(`Sending "${action.label}"…`);
   try {
     const response = await fetch(`/v1/timeline/items/${item.id}`, {
@@ -175,6 +204,8 @@ async function takeAction(item, action) {
     refresh();
   } catch (err) {
     setStatus(`Failed: ${err.message}`, "err");
+  } finally {
+    inFlight.delete(item.id);
   }
 }
 

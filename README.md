@@ -32,7 +32,7 @@ There is also an alternative **TypeScript standalone agent** in `src/` that comb
 
 ## Prerequisites
 
-- **Python 3.11+** (for the service stack)
+- **Python 3.12** (for the service stack — matches the Dockerfile and CI)
 - **X API credentials** — [developer.x.com/portal](https://developer.x.com/portal) (Basic tier minimum)
 - **xAI API key** — [console.x.ai](https://console.x.ai/) (for Grok)
 - **Node.js 20+** (only if using the TypeScript agent)
@@ -131,24 +131,44 @@ labels. An `action_id` the card doesn't offer is rejected with a 400.
 The timeline server serves a dependency-free approval surface at
 **http://localhost:8080/ui**. It lists cards, renders their typed content, and
 sends approvals back to the API. Enter the API token (if one is set) in the
-header; it is kept in `localStorage`, never in the served file.
+header.
 
 Cards whose action has already been executed render disabled, mirroring the
 dispatcher's rule that a processed card is terminal.
+
+> **Token storage.** The UI keeps the token in `localStorage` so a reload
+> doesn't lose it. That is a deliberate convenience for an operator console on
+> a trusted machine, not a hardened default: any same-origin script, and anyone
+> with access to the browser profile, can read it. Treat the token as a
+> credential that lives on that machine, rotate it when a browser profile is
+> shared or retired, and prefer a dedicated browser profile for the console.
 
 ### Authentication
 
 The timeline and A2A API — including the PATCH that authorizes agent actions —
 is **unauthenticated when `TIMELINE_API_TOKEN` is empty**, which keeps local
-development frictionless. The server prints a warning at startup in that state.
-Set the token before exposing the service anywhere:
+development frictionless.
+
+**On a deployment, an empty token is fatal rather than merely noisy.** When a
+deployment marker is present (`RAILWAY_SERVICE_NAME`, `RAILWAY_ENVIRONMENT`,
+`KUBERNETES_SERVICE_HOST`) and no token is set, the app refuses to start. This
+runs at import time, so it applies to every entrypoint including
+`uvicorn main:app` — the Railway path, which never calls
+`timeline_server.main()`. Set `TIMELINE_ALLOW_INSECURE=1` to override
+deliberately. Without a deployment marker, an empty token only warns.
 
 ```bash
-TIMELINE_API_TOKEN=$(openssl rand -hex 32)
+export TIMELINE_API_TOKEN="$(openssl rand -hex 32)"   # export: make run needs it in the child env
 ```
 
-All four services read the same value. `/health` never requires it.
-Set `TIMELINE_CORS_ORIGINS` only if you host a surface on another origin.
+All four services must read the same value. Under `docker compose` that happens
+via the shared `env_file`, but **separate Railway services do not inherit each
+other's environment** — set `TIMELINE_API_TOKEN` on the timeline-server,
+listener, and dispatcher services individually, or the workers will get 401s.
+
+`/health` never requires the token, so container and load-balancer probes keep
+working. Set `TIMELINE_CORS_ORIGINS` only if you host a surface on another
+origin.
 
 ## Card Content
 
@@ -160,10 +180,12 @@ blob of text. Four block types cover what members produce:
 | `text` | A prose section (`label` becomes its heading) |
 | `facts` | Key/value pairs — the parameters of a proposed action |
 | `table` | Tabular results |
-| `links` | Sources or destinations |
+| `links` | Sources or destinations (http/https only — other schemes are rejected) |
 
-Actions are typed too — `{id, label, style, confirm}` — where `label` is both
-what the human reads and what a member's `execute_action` matches on.
+Actions are typed too — `{id, label, style}` plus an optional `confirm` prompt —
+where `label` is both what the human reads and what a member's `execute_action`
+matches on. Action ids must be unique within a card; duplicates are rejected
+with a 422.
 
 Members build cards with helpers from `agents/base.py` rather than raw dicts:
 

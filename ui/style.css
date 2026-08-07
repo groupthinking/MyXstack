@@ -254,6 +254,15 @@ th {
   color: #fff;
 }
 
+/* The dark-mode accent is light enough that white text falls under 4.5:1.
+   Flip to dark text on it instead of darkening the accent, which would hurt
+   the link colour that shares the token. */
+@media (prefers-color-scheme: dark) {
+  .btn.primary {
+    color: var(--bg);
+  }
+}
+
 .btn.danger {
   color: var(--danger);
   border-color: var(--danger);

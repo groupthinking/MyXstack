@@ -1,6 +1,12 @@
+import pytest
+from pydantic import ValidationError
+
 from cards import (
     SCHEMA_VERSION,
+    DuplicateActionIdError,
+    Link,
     derive_body,
+    is_safe_url,
     normalize_actions,
     normalize_card,
     resolve_action,
@@ -86,6 +92,60 @@ def test_resolve_action_rejects_an_action_the_card_never_offered():
     card = {"body": "brief", "actions": []}
     assert resolve_action(card, "approve") is None
     assert resolve_action(None, "approve") is None
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "javascript:alert(1)",
+        "JavaScript:alert(1)",
+        "  javascript:alert(1)  ",
+        "data:text/html;base64,PHNjcmlwdD4=",
+        "vbscript:msgbox(1)",
+        "file:///etc/passwd",
+        "not a url",
+        "",
+    ],
+)
+def test_unsafe_link_urls_are_rejected(url):
+    # These would otherwise land in an anchor's href in the approval UI,
+    # where they'd execute alongside the bearer token.
+    assert is_safe_url(url) is False
+    with pytest.raises(ValidationError):
+        Link(label="x", url=url)
+
+
+@pytest.mark.parametrize(
+    "url",
+    ["https://x.com/search?q=%24TSLA", "http://localhost:8080/ui", "HTTPS://X.COM"],
+)
+def test_safe_link_urls_are_preserved(url):
+    assert is_safe_url(url) is True
+    assert Link(label="x", url=url).url == url
+
+
+def test_duplicate_action_ids_are_rejected_in_strict_mode():
+    typed = [
+        {"id": "approve", "label": "Approve Purchase"},
+        {"id": "approve", "label": "Approve Something Else"},
+    ]
+    with pytest.raises(DuplicateActionIdError):
+        normalize_actions(typed, strict=True)
+
+    # Distinct legacy labels can still collide after slugifying.
+    with pytest.raises(DuplicateActionIdError):
+        normalize_actions(["Approve!", "Approve?"], strict=True)
+
+
+def test_duplicate_action_ids_are_tolerated_when_reading_stored_cards():
+    # A bad historical record must not make the whole timeline unreadable.
+    actions = normalize_actions([{"id": "approve", "label": "A"}, {"id": "approve", "label": "B"}])
+    assert len(actions) == 2
+
+
+def test_unique_action_ids_pass_strict_mode():
+    actions = normalize_actions(["Approve", "Reject"], strict=True)
+    assert [a["id"] for a in actions] == ["approve", "reject"]
 
 
 def test_resolve_action_works_on_legacy_string_actions():
