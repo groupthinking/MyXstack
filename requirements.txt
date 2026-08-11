@@ -1,5 +1,5 @@
 # Core
-fastmcp>=3.4.5
+fastmcp>=3.4.6
 httpx>=0.28.1
 python-dotenv>=1.2.2
 
