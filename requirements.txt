@@ -8,7 +8,7 @@ fastapi>=0.141.1
 uvicorn>=0.52.1
 pydantic>=2.13.4
 sqlalchemy>=2.0.43
-psycopg[binary]>=3.2.10
+psycopg[binary]>=3.3.4
 
 # X API listener
 tweepy>=4.17.0
