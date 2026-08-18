@@ -7,7 +7,7 @@ python-dotenv>=1.2.2
 fastapi>=0.141.1
 uvicorn>=0.52.3
 pydantic>=2.13.4
-sqlalchemy>=2.0.51
+sqlalchemy>=2.0.52
 psycopg[binary]>=3.3.4
 
 # X API listener
