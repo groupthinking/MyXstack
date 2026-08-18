@@ -15,4 +15,4 @@ tweepy>=4.17.0
 requests>=2.34.2
 
 # Grok / xAI
-xai-sdk>=1.17.0
+xai-sdk>=1.18.0
