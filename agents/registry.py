@@ -13,13 +13,23 @@ from agents.router import find_target
 
 def build_team() -> List[TeamMember]:
     from agents.team.general import GeneralAgent
+    from agents.team.hermes import HermesAgent
     from agents.team.research import ResearchAgent
     from agents.team.shopping import ShoppingAgent
     from agents.team.tickerbot import TickerBot
     from agents.team.tradedesk import TradeDeskAgent
 
-    # GeneralAgent must stay last: it is the fallback when no handle matches.
-    return [TradeDeskAgent(), ShoppingAgent(), ResearchAgent(), TickerBot(), GeneralAgent()]
+    # Hermes is the untagged fallback and is also @handle-addressable.
+    # GeneralAgent stays on the roster only so pre-Hermes cards with
+    # agent_id "x-agent" still have an owner for execute_action.
+    return [
+        HermesAgent(),
+        TradeDeskAgent(),
+        ShoppingAgent(),
+        ResearchAgent(),
+        TickerBot(),
+        GeneralAgent(),
+    ]
 
 
 _TEAM: Optional[List[TeamMember]] = None
@@ -36,13 +46,19 @@ def get_team() -> List[TeamMember]:
 
 
 def route_mention(mention: MentionContext) -> TeamMember:
-    """Route to the earliest-tagged member; fall back to the member with an
-    empty handle (the general agent), regardless of roster order."""
+    """Route to the earliest-tagged member; otherwise the fallback member.
+
+    Fallback is Hermes (profile.fallback=True), not a generic Grok dump
+    and not "whoever has an empty handle".
+    """
     team = get_team()
     target = find_target(mention.text, team)
     if target:
         return target
-    return next(m for m in team if not m.profile.handle)
+    for member in team:
+        if member.profile.fallback:
+            return member
+    raise RuntimeError("No fallback member registered")
 
 
 def find_member(agent_id: Optional[str]) -> Optional[TeamMember]:

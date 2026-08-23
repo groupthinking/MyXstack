@@ -12,8 +12,8 @@ def find_target(text: str, team: List[TeamMember]) -> Optional[TeamMember]:
     Matching is case-insensitive and word-bounded, so @Tradedesk matches
     "@tradedesk $TSLA buy" but not "@TradedeskFanClub". When several
     members are tagged, the one tagged first wins (user intent, not roster
-    order). Members with an empty handle (the fallback agent) are never
-    matched here.
+    order). Members with an empty handle are never matched here; untagged
+    mentions are routed to the fallback member (Hermes) by route_mention.
     """
     lowered = text.lower()
     best_member: Optional[TeamMember] = None
