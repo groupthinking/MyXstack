@@ -1,8 +1,8 @@
-"""General agent — the fallback when no team member is tagged.
+"""Legacy general agent — owner of pre-Hermes `x-agent` cards.
 
-Preserves the original listener behavior: send the whole mention to Grok
-with MCP tools and reply with whatever it produces, logging a card with
-Approve/Reject/Snooze follow-up actions.
+New untagged mentions go to Hermes, not here. This member stays on the
+roster so the dispatcher can still execute Approve/Reject/Snooze on cards
+created before Hermes became the fallback.
 """
 
 from typing import Any, Dict, Optional

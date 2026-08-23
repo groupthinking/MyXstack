@@ -1,14 +1,16 @@
 # Agent Team
 
 MyXstack runs a **team of @handle-addressable members** on top of the A2A
-(agent-to-agent) layer. Tag a member in any mention and the listener routes
-the request to it:
+(agent-to-agent) layer. Tag a member in any mention and the listener routes the request to it.
+Untagged mentions go to **Hermes**.
 
 ```text
 @MyXstack @Tradedesk $TSLA buy 100
 @MyXstack @Research what's driving the $NVDA selloff?
 @MyXstack @Shopping find trail running shoes under $150
 @MyXstack @TickerBot $BTC
+@MyXstack stand up a 48-hour probe
+@MyXstack @Hermes own this goal
 ```
 
 ## Classification: interactive agents vs API bots
@@ -18,6 +20,7 @@ registry at `GET /v1/a2a/agents`):
 
 | Kind | What it is | Traits |
 |------|------------|--------|
+| `orchestrator` | Captain. Owns the goal. | Routes work, reads the roster, never does the specialist's job. Untagged mentions land here. |
 | `agent` (interactive agent) | Conversational, LLM-backed member | Reasons with Grok + MCP tools, can converse, run sub-steps, delegate to other members over A2A, and propose actions gated on human approval |
 | `bot` (API bot) | Deterministic function executor | Input → function → output. No LLM, no autonomy, instant and predictable |
 
@@ -25,13 +28,14 @@ registry at `GET /v1/a2a/agents`):
 
 | Handle | ID | Kind | What it does |
 |--------|----|------|--------------|
+| `@Hermes` | `hermes` | orchestrator | Owns untagged goals. Hands a vertical job to the matching specialist. Otherwise files a captain brief (units, owners, stop). Never answers as a generic Grok dump. |
 | `@Tradedesk` | `tradedesk` | agent | Parses `$TICKER buy/sell [qty]`, logs a **trade proposal** to the approval timeline. On Approve, executes via the **paper broker** (simulated fills in `~/.xmcp/paper_trades.json`). No live orders — a real broker is a pluggable adapter with the same `execute()` interface. |
 | `@Shopping` | `shopping` | agent | Researches product picks with Grok; purchases are approval-gated intents (no payment executor is wired in by default). |
 | `@Research` | `research` | agent | Answers questions using Grok + MCP tools for live X context; posts a short reply and files the full brief on the timeline. |
 | `@TickerBot` | `tickerbot` | bot | Deterministic cashtag lookup — returns live-search links for each `$TICKER`. Reference implementation of the `bot` kind. |
-| *(fallback)* | `x-agent` | agent | Original generic behavior when no member is tagged. |
+| *(legacy)* | `x-agent` | agent | Owner of pre-Hermes cards only. New untagged mentions do not land here. |
 
-Handles are configurable via `TRADEDESK_HANDLE`, `RESEARCH_HANDLE`,
+Handles are configurable via `HERMES_HANDLE`, `TRADEDESK_HANDLE`, `RESEARCH_HANDLE`,
 `SHOPPING_HANDLE`, `TICKERBOT_HANDLE` in `.env`.
 
 ## How a request flows
@@ -62,8 +66,8 @@ interactive agent can drive its own sub-agents and bots this way.
    - set an `AgentProfile` with a unique `id`, a `handle`, and a `kind`
    - implement `handle_mention()` → `AgentReply(text, card=None)`
    - implement `execute_action()` if your cards have Approve/Reject actions
-2. Add it to `build_team()` in `agents/registry.py` (before the fallback
-   `GeneralAgent`).
+2. Add it to `build_team()` in `agents/registry.py`. Untagged mentions always
+   go to the member with `fallback=True` (Hermes). Do not add a second fallback.
 3. Done — routing, X replies, timeline cards, and dispatcher callbacks are
    handled by the framework.
 

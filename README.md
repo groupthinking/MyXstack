@@ -24,9 +24,10 @@ Mentions are routed to a **team of @handle-addressable members** (see [docs/AGEN
 @MyXstack @Research why is $NVDA down? → Grok research brief on the timeline
 @MyXstack @Shopping shoes under $150   → product picks, purchase approval-gated
 @MyXstack @TickerBot $BTC              → deterministic cashtag lookup (API bot)
+@MyXstack stand up a 48-hour probe     → Hermes owns the goal and briefs it
 ```
 
-Members are classified as **interactive agents** (`kind: agent` — conversational, LLM-backed, can delegate over A2A) or **API bots** (`kind: bot` — deterministic input → function → output). Untagged mentions fall back to the original generic Grok behavior.
+Members are classified as **orchestrator** (`kind: orchestrator` — Hermes; owns untagged goals, routes vertical jobs, never does the specialist's job), **interactive agents** (`kind: agent` — conversational, LLM-backed, can delegate over A2A) or **API bots** (`kind: bot` — deterministic input → function → output). Untagged mentions go to **Hermes**, not a generic Grok dump. Tagged specialists still win when present.
 
 There is also an alternative **TypeScript standalone agent** in `src/` that combines listening + MCP server in a single process (see [TypeScript Agent](#typescript-agent) below).
 

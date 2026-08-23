@@ -1,7 +1,9 @@
 """Core types for the MyXstack agent team.
 
-Team members are classified into two kinds:
+Team members are classified into three kinds:
 
+- kind="orchestrator" (Hermes): owns the goal, routes work, never does
+  the specialist's job. Untagged mentions land here.
 - kind="agent" (interactive agent): conversational, LLM-backed via Grok,
   may run its own sub-steps, delegate to other members over A2A, and
   propose actions that require human approval on the timeline.
@@ -19,6 +21,7 @@ from cards import is_safe_url
 
 KIND_AGENT = "agent"
 KIND_BOT = "bot"
+KIND_ORCHESTRATOR = "orchestrator"
 
 
 @dataclass
@@ -53,6 +56,7 @@ class AgentProfile:
     description: str
     kind: str = KIND_AGENT
     tags: List[str] = field(default_factory=list)
+    fallback: bool = False
 
 
 class TeamMember:
