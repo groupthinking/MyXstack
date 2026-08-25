@@ -1,7 +1,7 @@
 # Core
 fastmcp>=3.4.7
 httpx>=0.28.1
-python-dotenv>=1.2.2
+python-dotenv>=1.2.3
 
 # Timeline / A2A API
 fastapi>=0.141.1
