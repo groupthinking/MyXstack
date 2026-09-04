@@ -4,89 +4,219 @@ orbs:
   node: circleci/node@5.2.0
   python: circleci/python@2.1.1
 
-jobs:
-  node_checks:
+executors:
+  node_executor:
     docker:
       - image: cimg/node:20.11
-    steps:
-      - checkout
-      - node/install-packages:
-          pkg-manager: npm
-          cache-path: ~/.npm
-      - run:
-          name: Install dependencies
-          command: |
-            if [ -f package-lock.json ]; then
-              npm ci
-            elif [ -f package.json ]; then
-              npm install
-            else
-              echo "No package.json found; skipping Node install"
-            fi
-      - run:
-          name: Lint (if available)
-          command: |
-            if [ -f package.json ] && npm run | grep -q " lint"; then
-              npm run lint
-            else
-              echo "No lint script found; skipping"
-            fi
-      - run:
-          name: Build (if available)
-          command: |
-            if [ -f package.json ] && npm run | grep -q " build"; then
-              npm run build
-            else
-              echo "No build script found; skipping"
-            fi
-      - run:
-          name: Test (if available)
-          command: |
-            if [ -f package.json ] && npm run | grep -q " test"; then
-              npm test -- --ci || npm test
-            else
-              echo "No test script found; skipping"
-            fi
-
-  python_checks:
+  python_executor:
     docker:
       - image: cimg/python:3.11
+
+commands:
+  detect_node_project:
     steps:
-      - checkout
-      - restore_cache:
-          keys:
-            - v1-pip-{{ arch }}-{{ .Branch }}-{{ checksum "requirements.txt" }}
-            - v1-pip-{{ arch }}-{{ .Branch }}-
-            - v1-pip-{{ arch }}-
       - run:
-          name: Install Python tooling and dependencies
+          name: Detect Node project
           command: |
-            python -m pip install --upgrade pip
-            if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
-            pip install pytest flake8
-      - save_cache:
-          key: v1-pip-{{ arch }}-{{ .Branch }}-{{ checksum "requirements.txt" }}
-          paths:
-            - ~/.cache/pip
+            if [ -f package.json ]; then
+              echo "export HAS_NODE=1" >> "$BASH_ENV"
+            else
+              echo "export HAS_NODE=0" >> "$BASH_ENV"
+            fi
+
+  detect_python_project:
+    steps:
       - run:
-          name: Lint Python (if python files exist)
+          name: Detect Python project
           command: |
             if find . -type f -name "*.py" | grep -q .; then
+              echo "export HAS_PYTHON=1" >> "$BASH_ENV"
+            else
+              echo "export HAS_PYTHON=0" >> "$BASH_ENV"
+            fi
+
+jobs:
+  node_install:
+    executor: node_executor
+    steps:
+      - checkout
+      - detect_node_project
+      - run:
+          name: Install Node dependencies
+          command: |
+            source "$BASH_ENV"
+            if [ "$HAS_NODE" = "1" ]; then
+              if [ -f package-lock.json ]; then
+                npm ci
+              else
+                npm install
+              fi
+            else
+              echo "No package.json found; skipping"
+            fi
+      - save_cache:
+          key: v2-npm-{{ arch }}-{{ .Branch }}-{{ checksum "package-lock.json" }}
+          paths:
+            - ~/.npm
+      - persist_to_workspace:
+          root: .
+          paths:
+            - .
+
+  node_lint:
+    executor: node_executor
+    steps:
+      - attach_workspace:
+          at: .
+      - restore_cache:
+          keys:
+            - v2-npm-{{ arch }}-{{ .Branch }}-{{ checksum "package-lock.json" }}
+            - v2-npm-{{ arch }}-{{ .Branch }}-
+            - v2-npm-{{ arch }}-
+      - detect_node_project
+      - run:
+          name: Lint Node project
+          command: |
+            source "$BASH_ENV"
+            if [ "$HAS_NODE" = "1" ] && npm run | grep -q " lint"; then
+              npm run lint
+            else
+              echo "No Node lint script found; skipping"
+            fi
+
+  node_build:
+    executor: node_executor
+    steps:
+      - attach_workspace:
+          at: .
+      - restore_cache:
+          keys:
+            - v2-npm-{{ arch }}-{{ .Branch }}-{{ checksum "package-lock.json" }}
+            - v2-npm-{{ arch }}-{{ .Branch }}-
+            - v2-npm-{{ arch }}-
+      - detect_node_project
+      - run:
+          name: Build Node project
+          command: |
+            source "$BASH_ENV"
+            if [ "$HAS_NODE" = "1" ] && npm run | grep -q " build"; then
+              npm run build
+            else
+              echo "No Node build script found; skipping"
+            fi
+      - store_artifacts:
+          path: dist
+          destination: node-dist
+
+  node_test:
+    executor: node_executor
+    parallelism: 2
+    steps:
+      - attach_workspace:
+          at: .
+      - restore_cache:
+          keys:
+            - v2-npm-{{ arch }}-{{ .Branch }}-{{ checksum "package-lock.json" }}
+            - v2-npm-{{ arch }}-{{ .Branch }}-
+            - v2-npm-{{ arch }}-
+      - detect_node_project
+      - run:
+          name: Test Node project
+          command: |
+            source "$BASH_ENV"
+            if [ "$HAS_NODE" = "1" ] && npm run | grep -q " test"; then
+              mkdir -p test-results
+              npm test -- --ci --reporter=junit --reporter-options outputFile=test-results/junit.xml || npm test
+            else
+              echo "No Node test script found; skipping"
+            fi
+      - store_test_results:
+          path: test-results
+
+  python_setup:
+    executor: python_executor
+    steps:
+      - checkout
+      - detect_python_project
+      - restore_cache:
+          keys:
+            - v2-pip-{{ arch }}-{{ .Branch }}-{{ checksum "requirements.txt" }}
+            - v2-pip-{{ arch }}-{{ .Branch }}-
+            - v2-pip-{{ arch }}-
+      - run:
+          name: Install Python dependencies
+          command: |
+            source "$BASH_ENV"
+            if [ "$HAS_PYTHON" = "1" ]; then
+              python -m pip install --upgrade pip
+              if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+              pip install pytest flake8
+            else
+              echo "No Python files found; skipping"
+            fi
+      - save_cache:
+          key: v2-pip-{{ arch }}-{{ .Branch }}-{{ checksum "requirements.txt" }}
+          paths:
+            - ~/.cache/pip
+      - persist_to_workspace:
+          root: .
+          paths:
+            - .
+
+  python_lint:
+    executor: python_executor
+    steps:
+      - attach_workspace:
+          at: .
+      - detect_python_project
+      - run:
+          name: Lint Python project
+          command: |
+            source "$BASH_ENV"
+            if [ "$HAS_PYTHON" = "1" ]; then
               flake8 .
             else
               echo "No Python files found; skipping"
             fi
+
+  python_test:
+    executor: python_executor
+    parallelism: 2
+    steps:
+      - attach_workspace:
+          at: .
+      - detect_python_project
       - run:
-          name: Test Python (if tests exist)
+          name: Test Python project
           command: |
-            if [ -d tests ] || find . -type f -name "test_*.py" -o -name "*_test.py" | grep -q .; then
-              pytest -q
+            source "$BASH_ENV"
+            if [ "$HAS_PYTHON" = "1" ] && ([ -d tests ] || find . -type f \( -name "test_*.py" -o -name "*_test.py" \) | grep -q .); then
+              mkdir -p test-results
+              pytest -q --junitxml=test-results/junit.xml
             else
               echo "No Python tests found; skipping"
             fi
+      - store_test_results:
+          path: test-results
 
 workflows:
+  version: 2
   ci:
     jobs:
-      - node_checks
-      - python_checks
+      - node_install
+      - node_lint:
+          requires:
+            - node_install
+      - node_build:
+          requires:
+            - node_install
+      - node_test:
+          requires:
+            - node_install
+      - python_setup
+      - python_lint:
+          requires:
+            - python_setup
+      - python_test:
+          requires:
+            - python_setup
