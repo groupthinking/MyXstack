@@ -149,8 +149,8 @@ jobs:
             source "$BASH_ENV"
             if [ "$HAS_PYTHON" = "1" ]; then
               python -m pip install --upgrade pip
-              if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
-              pip install pytest flake8
+              if [ -f requirements.txt ]; then python -m pip install -r requirements.txt; fi
+              python -m pip install pytest flake8
             else
               echo "No Python files found; skipping"
             fi
@@ -174,7 +174,7 @@ jobs:
           command: |
             source "$BASH_ENV"
             if [ "$HAS_PYTHON" = "1" ]; then
-              flake8 .
+              python -m flake8 .
             else
               echo "No Python files found; skipping"
             fi
@@ -192,7 +192,7 @@ jobs:
             source "$BASH_ENV"
             if [ "$HAS_PYTHON" = "1" ] && ([ -d tests ] || find . -type f \( -name "test_*.py" -o -name "*_test.py" \) | grep -q .); then
               mkdir -p test-results
-              pytest -q --junitxml=test-results/junit.xml
+              python -m pytest -q --junitxml=test-results/junit.xml
             else
               echo "No Python tests found; skipping"
             fi
