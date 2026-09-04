@@ -1,0 +1,92 @@
+version: 2.1
+
+orbs:
+  node: circleci/node@5.2.0
+  python: circleci/python@2.1.1
+
+jobs:
+  node_checks:
+    docker:
+      - image: cimg/node:20.11
+    steps:
+      - checkout
+      - node/install-packages:
+          pkg-manager: npm
+          cache-path: ~/.npm
+      - run:
+          name: Install dependencies
+          command: |
+            if [ -f package-lock.json ]; then
+              npm ci
+            elif [ -f package.json ]; then
+              npm install
+            else
+              echo "No package.json found; skipping Node install"
+            fi
+      - run:
+          name: Lint (if available)
+          command: |
+            if [ -f package.json ] && npm run | grep -q " lint"; then
+              npm run lint
+            else
+              echo "No lint script found; skipping"
+            fi
+      - run:
+          name: Build (if available)
+          command: |
+            if [ -f package.json ] && npm run | grep -q " build"; then
+              npm run build
+            else
+              echo "No build script found; skipping"
+            fi
+      - run:
+          name: Test (if available)
+          command: |
+            if [ -f package.json ] && npm run | grep -q " test"; then
+              npm test -- --ci || npm test
+            else
+              echo "No test script found; skipping"
+            fi
+
+  python_checks:
+    docker:
+      - image: cimg/python:3.11
+    steps:
+      - checkout
+      - restore_cache:
+          keys:
+            - v1-pip-{{ arch }}-{{ .Branch }}-{{ checksum "requirements.txt" }}
+            - v1-pip-{{ arch }}-{{ .Branch }}-
+            - v1-pip-{{ arch }}-
+      - run:
+          name: Install Python tooling and dependencies
+          command: |
+            python -m pip install --upgrade pip
+            if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+            pip install pytest flake8
+      - save_cache:
+          key: v1-pip-{{ arch }}-{{ .Branch }}-{{ checksum "requirements.txt" }}
+          paths:
+            - ~/.cache/pip
+      - run:
+          name: Lint Python (if python files exist)
+          command: |
+            if find . -type f -name "*.py" | grep -q .; then
+              flake8 .
+            else
+              echo "No Python files found; skipping"
+            fi
+      - run:
+          name: Test Python (if tests exist)
+          command: |
+            if [ -d tests ] || find . -type f -name "test_*.py" -o -name "*_test.py" | grep -q .; then
+              pytest -q
+            else
+              echo "No Python tests found; skipping"
+            fi
+
+workflows:
+  ci:
+    jobs:
+      - node_checks
+      - python_checks
