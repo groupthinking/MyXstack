@@ -35,6 +35,39 @@ commands:
               echo "export HAS_PYTHON=0" >> "$BASH_ENV"
             fi
 
+  # Each Python job runs in a fresh container: installed pip packages do NOT
+  # persist via the workspace, only files do. Every job that invokes python
+  # tooling must therefore install the dev dependencies itself.
+  install_python_deps:
+    steps:
+      - restore_cache:
+          keys:
+            - v3-pip-{{ arch }}-{{ .Branch }}-{{ checksum "requirements-dev.txt" }}
+            - v3-pip-{{ arch }}-{{ .Branch }}-
+            - v3-pip-{{ arch }}-
+      - run:
+          name: Install Python dependencies
+          command: |
+            source "$BASH_ENV"
+            if [ "$HAS_PYTHON" = "1" ]; then
+              python -m pip install --upgrade pip
+              if [ -f requirements-dev.txt ]; then
+                python -m pip install -r requirements-dev.txt
+              elif [ -f requirements.txt ]; then
+                python -m pip install -r requirements.txt
+                python -m pip install pytest flake8
+              else
+                python -m pip install pytest flake8
+              fi
+              python -m pytest --version
+            else
+              echo "No Python files found; skipping"
+            fi
+      - save_cache:
+          key: v3-pip-{{ arch }}-{{ .Branch }}-{{ checksum "requirements-dev.txt" }}
+          paths:
+            - ~/.cache/pip
+
 jobs:
   node_install:
     executor: node_executor
@@ -138,26 +171,7 @@ jobs:
     steps:
       - checkout
       - detect_python_project
-      - restore_cache:
-          keys:
-            - v2-pip-{{ arch }}-{{ .Branch }}-{{ checksum "requirements.txt" }}
-            - v2-pip-{{ arch }}-{{ .Branch }}-
-            - v2-pip-{{ arch }}-
-      - run:
-          name: Install Python dependencies
-          command: |
-            source "$BASH_ENV"
-            if [ "$HAS_PYTHON" = "1" ]; then
-              python -m pip install --upgrade pip
-              if [ -f requirements.txt ]; then python -m pip install -r requirements.txt; fi
-              python -m pip install pytest flake8
-            else
-              echo "No Python files found; skipping"
-            fi
-      - save_cache:
-          key: v2-pip-{{ arch }}-{{ .Branch }}-{{ checksum "requirements.txt" }}
-          paths:
-            - ~/.cache/pip
+      - install_python_deps
       - persist_to_workspace:
           root: .
           paths:
@@ -169,6 +183,7 @@ jobs:
       - attach_workspace:
           at: .
       - detect_python_project
+      - install_python_deps
       - run:
           name: Lint Python project
           command: |
@@ -186,6 +201,7 @@ jobs:
       - attach_workspace:
           at: .
       - detect_python_project
+      - install_python_deps
       - run:
           name: Test Python project
           command: |
