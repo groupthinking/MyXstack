@@ -1,5 +1,9 @@
 version: 2.1
 
+# All gates delegate to Makefile targets (make ci-python-lint, ci-python-test,
+# ci-node-install, ci-node-build). Run `make ci` locally before pushing — the
+# pipeline must never fail on something that wasn't run locally.
+
 orbs:
   node: circleci/node@5.2.0
   python: circleci/python@2.1.1
@@ -80,7 +84,7 @@ jobs:
             source "$BASH_ENV"
             if [ "$HAS_NODE" = "1" ]; then
               if [ -f package-lock.json ]; then
-                npm ci
+                make ci-node-install
               else
                 npm install
               fi
@@ -114,7 +118,7 @@ jobs:
             if [ "$HAS_NODE" = "1" ] && npm run | grep -q " lint"; then
               npm run lint
             else
-              echo "No Node lint script found; skipping"
+              echo "No Node lint script found; skipping (run 'make ci' locally for full parity)"
             fi
 
   node_build:
@@ -133,7 +137,7 @@ jobs:
           command: |
             source "$BASH_ENV"
             if [ "$HAS_NODE" = "1" ] && npm run | grep -q " build"; then
-              npm run build
+              make ci-node-build
             else
               echo "No Node build script found; skipping"
             fi
@@ -161,7 +165,7 @@ jobs:
               mkdir -p test-results
               npm test -- --ci --reporter=junit --reporter-options outputFile=test-results/junit.xml || npm test
             else
-              echo "No Node test script found; skipping"
+              echo "No Node test script found; skipping (run 'make ci' locally for full parity)"
             fi
       - store_test_results:
           path: test-results
@@ -189,7 +193,7 @@ jobs:
           command: |
             source "$BASH_ENV"
             if [ "$HAS_PYTHON" = "1" ]; then
-              python -m flake8 .
+              make ci-python-lint
             else
               echo "No Python files found; skipping"
             fi
@@ -208,7 +212,7 @@ jobs:
             source "$BASH_ENV"
             if [ "$HAS_PYTHON" = "1" ] && ([ -d tests ] || find . -type f \( -name "test_*.py" -o -name "*_test.py" \) | grep -q .); then
               mkdir -p test-results
-              python -m pytest -q --junitxml=test-results/junit.xml
+              make ci-python-test PYTEST_ARGS="--junitxml=test-results/junit.xml"
             else
               echo "No Python tests found; skipping"
             fi

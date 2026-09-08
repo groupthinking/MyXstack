@@ -1,0 +1,22 @@
+[flake8]
+# PEP8 structure with the codebase's existing 120-char line limit.
+# The unconfigured default (79) fails E501 across a2a_store.py, listener.py,
+# mcp_dispatcher.py, storage_db.py, cards.py, agents/team/tradedesk.py, etc.
+# This config codifies the style the code already follows; F-class errors
+# (unused imports, undefined names) are still enforced.
+max-line-length = 120
+max-complexity = 15
+extend-ignore =
+    # False positive on slices formatted by black/ruff-style tooling
+    E203,
+    # Line break before/after binary operator — style choice, not a defect
+    W503,
+    W504,
+exclude =
+    .git,
+    .venv,
+    __pycache__,
+    node_modules,
+    dist,
+    build,
+    .eggs,

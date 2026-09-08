@@ -2,7 +2,6 @@ import json
 import multiprocessing
 import os
 import threading
-from pathlib import Path
 from typing import List
 
 import pytest
@@ -249,7 +248,7 @@ def test_a_database_predating_the_card_columns_is_upgraded_in_place(tmp_path, mo
     """
     from datetime import datetime, timezone
 
-    from sqlalchemy import Column, MetaData, Table, create_engine, inspect
+    from sqlalchemy import create_engine, inspect
 
     from storage_db import get_engine, reset_engine_for_tests, timeline_items
 

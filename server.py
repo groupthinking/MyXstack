@@ -179,20 +179,7 @@ def get_auth_headers() -> dict:
     return {"Authorization": f"Bearer {token}"}
 
 
-def create_mcp() -> FastMCP:
-    load_env()
-    debug_enabled = setup_logging()
-    parser_flag = os.getenv("FASTMCP_EXPERIMENTAL_ENABLE_NEW_OPENAPI_PARSER")
-    if parser_flag is not None:
-        os.environ["FASTMCP_EXPERIMENTAL_ENABLE_NEW_OPENAPI_PARSER"] = parser_flag
-
-    base_url = os.getenv("X_API_BASE_URL", "https://api.x.com")
-    timeout = float(os.getenv("X_API_TIMEOUT", "30"))
-
-    spec = load_openapi_spec()
-    filtered_spec = filter_openapi_spec(spec)
-    comma_params = collect_comma_params(filtered_spec)
-    print_tool_list(filtered_spec)
+def _build_normalize_query_params(comma_params: set[str]):
     async def normalize_query_params(request: httpx.Request) -> None:
         if not comma_params:
             return
@@ -224,11 +211,19 @@ def create_mcp() -> FastMCP:
 
         request.url = request.url.copy_with(params=normalized)
 
+    return normalize_query_params
+
+
+def _build_log_request(debug_enabled: bool):
     async def log_request(request: httpx.Request) -> None:
         if not debug_enabled:
             return
         LOGGER.info("X API request %s %s", request.method, request.url)
 
+    return log_request
+
+
+def _build_log_response(debug_enabled: bool):
     async def log_response(response: httpx.Response) -> None:
         if not debug_enabled:
             return
@@ -244,6 +239,28 @@ def create_mcp() -> FastMCP:
             if len(text) > 1000:
                 text = text[:1000] + "...<truncated>"
             LOGGER.warning("X API error body: %s", text)
+
+    return log_response
+
+
+def create_mcp() -> FastMCP:
+    load_env()
+    debug_enabled = setup_logging()
+    parser_flag = os.getenv("FASTMCP_EXPERIMENTAL_ENABLE_NEW_OPENAPI_PARSER")
+    if parser_flag is not None:
+        os.environ["FASTMCP_EXPERIMENTAL_ENABLE_NEW_OPENAPI_PARSER"] = parser_flag
+
+    base_url = os.getenv("X_API_BASE_URL", "https://api.x.com")
+    timeout = float(os.getenv("X_API_TIMEOUT", "30"))
+
+    spec = load_openapi_spec()
+    filtered_spec = filter_openapi_spec(spec)
+    comma_params = collect_comma_params(filtered_spec)
+    print_tool_list(filtered_spec)
+
+    normalize_query_params = _build_normalize_query_params(comma_params)
+    log_request = _build_log_request(debug_enabled)
+    log_response = _build_log_response(debug_enabled)
 
     client = httpx.AsyncClient(
         base_url=base_url,
