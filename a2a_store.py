@@ -84,9 +84,12 @@ def _ensure_default_agents() -> None:
             return
 
         with read_connection() as conn:
+            default_ids = [a["id"] for a in DEFAULT_AGENTS]
             existing_ids = {
                 row[0]
-                for row in conn.execute(select(a2a_agents.c.id).where(a2a_agents.c.id.in_([a["id"] for a in DEFAULT_AGENTS])))
+                for row in conn.execute(
+                    select(a2a_agents.c.id).where(a2a_agents.c.id.in_(default_ids))
+                )
             }
 
         for agent in DEFAULT_AGENTS:

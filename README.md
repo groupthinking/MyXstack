@@ -100,6 +100,20 @@ curl http://localhost:8080/v1/timeline/users/default/items
 curl http://localhost:8080/v1/a2a/agents
 ```
 
+### 4. Run CI gates locally before pushing
+
+Every CircleCI gate delegates to a Makefile target, so the pipeline can never
+fail on something you didn't run locally:
+
+```bash
+make ci          # all gates: flake8, pytest, npm ci, tsc build
+make ci-python   # Python gates only (lint + tests in a fresh .venv)
+make ci-node     # Node gates only (lockfile check + TypeScript build)
+```
+
+Rule: if a gate can't be reproduced locally in one command, it doesn't belong
+in the pipeline. `make ci` must pass before every push to `main`.
+
 ## API Reference
 
 ### Timeline
