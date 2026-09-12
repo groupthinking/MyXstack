@@ -13,6 +13,14 @@ from agents.base import MentionContext, build_card, text_block, timeline_headers
 from agents.registry import register_team, route_mention
 
 LAST_SEEN_PATH = Path(os.getenv("XMCP_LAST_SEEN_PATH", "~/.xmcp/last_seen.txt")).expanduser()
+PROCESSED_MENTIONS_PATH = Path(
+    os.getenv("XMCP_PROCESSED_MENTIONS_PATH", "~/.xmcp/processed_mentions.txt")
+).expanduser()
+# The last-seen watermark has second granularity and start_time is inclusive,
+# so the newest processed mention is re-fetched on every restart. The
+# processed-mentions ledger exists to suppress that duplicate reply; it only
+# needs to cover the replay window, not all history.
+MAX_PROCESSED_MENTIONS = int(os.getenv("XMCP_MAX_PROCESSED_MENTIONS", "10000"))
 POLL_SECONDS = int(os.getenv("POLL_INTERVAL_SECONDS", "60"))
 PAYMENT_REQUIRED_BACKOFF_SECONDS = int(os.getenv("X_PAYMENT_REQUIRED_BACKOFF_SECONDS", "900"))
 
@@ -32,6 +40,43 @@ def load_last_seen() -> Optional[str]:
     if not LAST_SEEN_PATH.exists():
         return None
     return LAST_SEEN_PATH.read_text(encoding="utf-8").strip() or None
+
+
+def load_processed_mentions() -> "set[str]":
+    """Load recently processed mention IDs, compacting the ledger on the way.
+
+    An unreadable ledger must not kill the listener thread — worst case a
+    few boundary mentions get a second reply, which is preferable to no
+    mentions being handled at all.
+    """
+    try:
+        if not PROCESSED_MENTIONS_PATH.exists():
+            return set()
+        lines = [
+            line.strip()
+            for line in PROCESSED_MENTIONS_PATH.read_text(encoding="utf-8").splitlines()
+            if line.strip()
+        ]
+    except OSError as exc:
+        print(
+            f"WARNING: could not read {PROCESSED_MENTIONS_PATH}: {exc}; "
+            "starting with an empty processed-mentions set (duplicate replies possible)",
+            flush=True,
+        )
+        return set()
+    if len(lines) > MAX_PROCESSED_MENTIONS:
+        lines = lines[-MAX_PROCESSED_MENTIONS:]
+        try:
+            PROCESSED_MENTIONS_PATH.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        except OSError as exc:
+            print(f"WARNING: could not compact {PROCESSED_MENTIONS_PATH}: {exc}", flush=True)
+    return set(lines)
+
+
+def save_processed_mention(mention_id: str) -> None:
+    PROCESSED_MENTIONS_PATH.parent.mkdir(parents=True, exist_ok=True)
+    with PROCESSED_MENTIONS_PATH.open("a", encoding="utf-8") as f:
+        f.write(f"{mention_id}\n")
 
 
 def build_client() -> tweepy.Client:
@@ -179,6 +224,7 @@ def main() -> None:
     register_team()
 
     last_seen = load_last_seen()
+    processed_mentions = load_processed_mentions()
     start_time = datetime.now(timezone.utc) - timedelta(minutes=10)
     if last_seen:
         try:
@@ -215,10 +261,28 @@ def main() -> None:
         # the last-seen watermark only ever moves forward.
         epoch = datetime(1970, 1, 1, tzinfo=timezone.utc)
         for mention in sorted(mentions.data or [], key=lambda m: m.created_at or epoch):
-            if not process_mention(client, mention):
-                # Card push failed: stop here so this mention (and later
-                # ones) are retried on the next poll.
-                break
+            mention_id = str(mention.id)
+            if mention_id in processed_mentions:
+                # Already replied (start_time is inclusive, so the boundary
+                # mention comes back every poll/restart). Still advance the
+                # watermark so it stops being re-fetched.
+                print(f"Skipping already processed mention {mention.id}", flush=True)
+            else:
+                if not process_mention(client, mention):
+                    # Card push failed: stop here so this mention (and later
+                    # ones) are retried on the next poll.
+                    break
+                processed_mentions.add(mention_id)
+                try:
+                    save_processed_mention(mention_id)
+                except OSError as exc:
+                    # The reply already went out — a persistence failure only
+                    # risks a duplicate after restart, so log it as such
+                    # rather than as a reply failure.
+                    print(
+                        f"WARNING: could not persist processed mention {mention.id}: {exc}",
+                        flush=True,
+                    )
             start_time = mention.created_at or datetime.now(timezone.utc)
             save_last_seen(start_time.isoformat())
 
