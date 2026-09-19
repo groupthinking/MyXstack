@@ -40,7 +40,13 @@ def test_mention_creates_approval_card(tmp_path, monkeypatch):
         MentionContext(text="@Tradedesk $TSLA buy 10", mention_id=1, author_id=2)
     )
     assert "pending human approval" in reply.text.lower()
-    assert reply.card["actions"] == ["Approve", "Reject"]
+    # Both halves matter: execute_action() matches on the label, and the
+    # approval UI dispatches on the id, so a regression in either breaks a
+    # different half of the round trip.
+    assert [(a["id"], a["label"]) for a in reply.card["actions"]] == [
+        ("approve", "Approve"),
+        ("reject", "Reject"),
+    ]
     meta = reply.card["metadata"]
     assert meta["agent_id"] == "tradedesk"
     assert meta["ticker"] == "TSLA"
@@ -106,6 +112,22 @@ def test_invalid_side_and_quantity_rejected(tmp_path):
         "metadata": {"action_type": "trade", "ticker": "TSLA", "side": "buy", "quantity": -5},
     }
     assert "Invalid side" in agent.execute_action(bad_side, "Approve")
+    assert "Invalid quantity" in agent.execute_action(bad_qty, "Approve")
+    assert broker.positions() == {}
+
+
+def test_overflow_quantity_is_rejected(tmp_path):
+    broker = PaperBroker(str(tmp_path / "trades.json"))
+    agent = TradeDeskAgent(broker=broker)
+    bad_qty = {
+        "id": "i3",
+        "metadata": {
+            "action_type": "trade",
+            "ticker": "TSLA",
+            "side": "buy",
+            "quantity": 10**400,
+        },
+    }
     assert "Invalid quantity" in agent.execute_action(bad_qty, "Approve")
     assert broker.positions() == {}
 

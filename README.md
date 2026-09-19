@@ -24,15 +24,16 @@ Mentions are routed to a **team of @handle-addressable members** (see [docs/AGEN
 @MyXstack @Research why is $NVDA down? → Grok research brief on the timeline
 @MyXstack @Shopping shoes under $150   → product picks, purchase approval-gated
 @MyXstack @TickerBot $BTC              → deterministic cashtag lookup (API bot)
+@MyXstack stand up a 48-hour probe     → Hermes owns the goal and briefs it
 ```
 
-Members are classified as **interactive agents** (`kind: agent` — conversational, LLM-backed, can delegate over A2A) or **API bots** (`kind: bot` — deterministic input → function → output). Untagged mentions fall back to the original generic Grok behavior.
+Members are classified as **orchestrator** (`kind: orchestrator` — Hermes; owns untagged goals, routes vertical jobs, never does the specialist's job), **interactive agents** (`kind: agent` — conversational, LLM-backed, can delegate over A2A) or **API bots** (`kind: bot` — deterministic input → function → output). Untagged mentions go to **Hermes**, not a generic Grok dump. Tagged specialists still win when present.
 
 There is also an alternative **TypeScript standalone agent** in `src/` that combines listening + MCP server in a single process (see [TypeScript Agent](#typescript-agent) below).
 
 ## Prerequisites
 
-- **Python 3.11+** (for the service stack)
+- **Python 3.12** (for the service stack — matches the Dockerfile and CI)
 - **X API credentials** — [developer.x.com/portal](https://developer.x.com/portal) (Basic tier minimum)
 - **xAI API key** — [console.x.ai](https://console.x.ai/) (for Grok)
 - **Node.js 20+** (only if using the TypeScript agent)
@@ -99,6 +100,20 @@ curl http://localhost:8080/v1/timeline/users/default/items
 curl http://localhost:8080/v1/a2a/agents
 ```
 
+### 4. Run CI gates locally before pushing
+
+Every CircleCI gate delegates to a Makefile target, so the pipeline can never
+fail on something you didn't run locally:
+
+```bash
+make ci          # all gates: flake8, pytest, npm ci, tsc build
+make ci-python   # Python gates only (lint + tests in a fresh .venv)
+make ci-node     # Node gates only (lockfile check + TypeScript build)
+```
+
+Rule: if a gate can't be reproduced locally in one command, it doesn't belong
+in the pipeline. `make ci` must pass before every push to `main`.
+
 ## API Reference
 
 ### Timeline
@@ -111,6 +126,11 @@ curl http://localhost:8080/v1/a2a/agents
 | PATCH | `/v1/timeline/items/{id}` | Update / take action on card |
 | DELETE | `/v1/timeline/items/{id}` | Delete card |
 
+Take an action with either `{"action_id": "approve"}` (what the UI sends) or
+`{"action": "Approve"}` (the label). Both dispatch identically — the server
+resolves an id to its label before handing off, because team members match on
+labels. An `action_id` the card doesn't offer is rejected with a 400.
+
 ### Agent-to-Agent (A2A)
 
 | Method | Endpoint | Description |
@@ -120,6 +140,97 @@ curl http://localhost:8080/v1/a2a/agents
 | POST | `/v1/a2a/agents` | Register new agent |
 | GET | `/v1/a2a/agents/{id}/messages` | Get agent's messages |
 | POST | `/v1/a2a/messages` | Send agent message |
+
+## Approval UI
+
+The timeline server serves a dependency-free approval surface at
+**http://localhost:8080/ui**. It lists cards, renders their typed content, and
+sends approvals back to the API. Enter the API token (if one is set) in the
+header.
+
+Cards whose action has already been executed render disabled, mirroring the
+dispatcher's rule that a processed card is terminal.
+
+> **Token storage.** The UI keeps the token in `localStorage` so a reload
+> doesn't lose it. That is a deliberate convenience for an operator console on
+> a trusted machine, not a hardened default: any same-origin script, and anyone
+> with access to the browser profile, can read it. Treat the token as a
+> credential that lives on that machine, rotate it when a browser profile is
+> shared or retired, and prefer a dedicated browser profile for the console.
+
+### Authentication
+
+The timeline and A2A API — including the PATCH that authorizes agent actions —
+is **unauthenticated when `TIMELINE_API_TOKEN` is empty**, which keeps local
+development frictionless.
+
+**On a deployment, an empty token is fatal rather than merely noisy.** When a
+deployment marker is present (`RAILWAY_SERVICE_NAME`, `RAILWAY_ENVIRONMENT`,
+`KUBERNETES_SERVICE_HOST`) and no token is set, the app refuses to start. This
+runs at import time, so it applies to every entrypoint including
+`uvicorn main:app` — the Railway path, which never calls
+`timeline_server.main()`. Set `TIMELINE_ALLOW_INSECURE=1` to override
+deliberately. Without a deployment marker, an empty token only warns.
+
+**That detection is a heuristic with a known gap.** Only Railway and
+Kubernetes are recognised. A VPS, Fly, Render, or `docker compose` on a public
+host sets none of those markers, so an empty token there warns rather than
+refusing — and the approval API is reachable anonymously. Set
+`TIMELINE_API_TOKEN` yourself on any host not in that list. Closing the gap
+means inverting the default (always fatal, opt out explicitly for local),
+which is a deliberate open question rather than an oversight.
+
+```bash
+export TIMELINE_API_TOKEN="$(openssl rand -hex 32)"   # export: make run needs it in the child env
+```
+
+All four services must read the same value. Under `docker compose` that happens
+via the shared `env_file`, but **separate Railway services do not inherit each
+other's environment** — set `TIMELINE_API_TOKEN` on the timeline-server,
+listener, and dispatcher services individually, or the workers will get 401s.
+
+`/health` never requires the token, so container and load-balancer probes keep
+working. Set `TIMELINE_CORS_ORIGINS` only if you host a surface on another
+origin.
+
+## Card Content
+
+A card carries typed `blocks` so a surface can render structure instead of one
+blob of text. Four block types cover what members produce:
+
+| Block | Use |
+|-------|-----|
+| `text` | A prose section (`label` becomes its heading) |
+| `facts` | Key/value pairs — the parameters of a proposed action |
+| `table` | Tabular results |
+| `links` | Sources or destinations (http/https only — other schemes are rejected) |
+
+Actions are typed too — `{id, label, style}` plus an optional `confirm` prompt —
+where `label` is both what the human reads and what a member's `execute_action`
+matches on. Action ids must be unique within a card; duplicates are rejected
+with a 422.
+
+Members build cards with helpers from `agents/base.py` rather than raw dicts:
+
+```python
+from agents.base import build_card, facts_block, text_block, approve_reject
+
+card = build_card(
+    title="Trade proposal: BUY 10 $TSLA",
+    blocks=[
+        facts_block({"Ticker": "$TSLA", "Side": "BUY"}, label="Order"),
+        text_block(mention.text, label="Requested via X"),
+    ],
+    actions=approve_reject("Approve", "Reject"),
+    metadata={"agent_id": "tradedesk", "action_type": "trade"},
+)
+```
+
+**Backward compatibility.** `body` is still populated — derived from `blocks`
+when not supplied — so anything reading it keeps working. Cards written before
+typed blocks are upgraded in memory on read, so no card-level rewrite is needed.
+(That is separate from `scripts/migrate_json_to_sql.py`, which is a one-time
+move of the old JSON stores into SQL.)
 
 ## OpenAPI Filtering
 
@@ -166,13 +277,24 @@ Wire the cross-service URLs after deployment:
 ```
 MCP_SERVER_URL=https://<mcp-server>.up.railway.app/mcp
 TIMELINE_API_URL=https://<timeline-server>.up.railway.app
+# All four services must share one database:
+DATABASE_URL=postgres://<user>:<pass>@<host>:<port>/<db>
 ```
 
 See `docs/DEPLOYMENT.md` for full Railway setup details.
 
 ## Data Storage
 
-Timeline cards and A2A messages are stored in JSON files at `~/.xmcp/` by default. This is intentional for lightweight local use. For production, override `TIMELINE_STORE_PATH` and `A2A_STORE_PATH` to point to a persistent volume.
+Timeline cards and A2A messages are stored in SQL and selected by `DATABASE_URL`:
+
+- `DATABASE_URL` unset (or `sqlite://...`) → SQLite (`~/.xmcp/xmcp.db` by default)
+- `postgres://...` or `postgresql://...` → Postgres (Railway-ready; `postgres://` is normalized automatically)
+
+Tables are created automatically on startup. For local concurrency safety, SQLite enables WAL mode and a busy timeout. To migrate legacy JSON stores (`TIMELINE_STORE_PATH`, `A2A_STORE_PATH`), run:
+
+```bash
+python scripts/migrate_json_to_sql.py
+```
 
 ## Project Structure
 
@@ -181,8 +303,13 @@ Timeline cards and A2A messages are stored in JSON files at `~/.xmcp/` by defaul
 ├── timeline_server.py     # Timeline + A2A FastAPI server
 ├── listener.py            # X mention poller + Grok responder
 ├── mcp_dispatcher.py      # Timeline action executor
-├── timeline_store.py      # JSON-file timeline persistence
-├── a2a_store.py           # JSON-file A2A persistence
+├── cards.py               # Typed card schema (blocks, actions, legacy upgrade)
+├── timeline_store.py      # SQL-backed timeline persistence
+├── a2a_store.py           # SQL-backed A2A persistence
+├── storage_db.py          # Shared SQLAlchemy engine/schema
+├── store_lock.py          # Cross-process file locking for the paper-trade ledger
+├── scripts/migrate_json_to_sql.py
+├── ui/                    # Approval surface served at /ui (no build step)
 ├── openapi.json           # X API OpenAPI spec (used by MCP server)
 ├── src/                   # TypeScript standalone agent (alternative)
 ├── docs/                  # Architecture, deployment, usage guides

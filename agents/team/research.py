@@ -14,7 +14,9 @@ from agents.base import (
     AgentReply,
     MentionContext,
     TeamMember,
+    build_card,
     grok_chat,
+    text_block,
     truncate_for_reply,
     wrap_untrusted,
 )
@@ -22,7 +24,6 @@ from agents.base import (
 
 class ResearchAgent(TeamMember):
     def __init__(self):
-        """Initialize the research agent with its profile and identifying metadata."""
         super().__init__(
             AgentProfile(
                 id="research",
@@ -35,15 +36,6 @@ class ResearchAgent(TeamMember):
         )
 
     def handle_mention(self, mention: MentionContext) -> AgentReply:
-        """
-        Respond to a mention with a concise research brief and a full-brief timeline card.
-        
-        Parameters:
-            mention (MentionContext): The mention containing the research question and its identifier.
-        
-        Returns:
-            AgentReply: A truncated research response with a full brief card, or an offline status message when no brief is available.
-        """
         brief = grok_chat(
             "You are a research agent on X. Answer the question below concisely "
             "and factually, using available tools for live context.\n\n"
@@ -53,14 +45,16 @@ class ResearchAgent(TeamMember):
             return AgentReply(text="Research agent is offline (no XAI_API_KEY configured).")
 
         reply = truncate_for_reply(brief, suffix="… Full brief on your timeline.")
-        card = {
-            "title": "Research brief",
-            "body": f"Question:\n{mention.text}\n\nBrief:\n{brief}",
-            "actions": [],
-            "metadata": {
+        card = build_card(
+            title="Research brief",
+            blocks=[
+                text_block(mention.text, label="Question"),
+                text_block(brief, label="Brief"),
+            ],
+            metadata={
                 "agent_id": self.profile.id,
                 "action_type": "research",
                 "mention_id": mention.mention_id,
             },
-        }
+        )
         return AgentReply(text=reply, card=card)

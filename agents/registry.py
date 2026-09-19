@@ -7,24 +7,29 @@ from typing import List, Optional
 
 import requests
 
-from agents.base import MentionContext, TeamMember
+from agents.base import MentionContext, TeamMember, timeline_headers
 from agents.router import find_target
 
 
 def build_team() -> List[TeamMember]:
-    """Construct the roster of available team agents.
-    
-    Returns:
-        List[TeamMember]: Team members ordered with the general agent last as the fallback.
-    """
     from agents.team.general import GeneralAgent
+    from agents.team.hermes import HermesAgent
     from agents.team.research import ResearchAgent
     from agents.team.shopping import ShoppingAgent
     from agents.team.tickerbot import TickerBot
     from agents.team.tradedesk import TradeDeskAgent
 
-    # GeneralAgent must stay last: it is the fallback when no handle matches.
-    return [TradeDeskAgent(), ShoppingAgent(), ResearchAgent(), TickerBot(), GeneralAgent()]
+    # Hermes is the untagged fallback and is also @handle-addressable.
+    # GeneralAgent stays on the roster only so pre-Hermes cards with
+    # agent_id "x-agent" still have an owner for execute_action.
+    return [
+        HermesAgent(),
+        TradeDeskAgent(),
+        ShoppingAgent(),
+        ResearchAgent(),
+        TickerBot(),
+        GeneralAgent(),
+    ]
 
 
 _TEAM: Optional[List[TeamMember]] = None
@@ -32,12 +37,6 @@ _TEAM_LOCK = threading.Lock()
 
 
 def get_team() -> List[TeamMember]:
-    """
-    Return the cached team roster, constructing it on first access.
-    
-    Returns:
-    	List[TeamMember]: The team roster.
-    """
     global _TEAM
     if _TEAM is None:
         with _TEAM_LOCK:
@@ -47,25 +46,22 @@ def get_team() -> List[TeamMember]:
 
 
 def route_mention(mention: MentionContext) -> TeamMember:
-    """Route to the earliest-tagged member; fall back to the member with an
-    empty handle (the general agent), regardless of roster order."""
+    """Route to the earliest-tagged member; otherwise the fallback member.
+
+    Fallback is Hermes (profile.fallback=True), not a generic Grok dump
+    and not "whoever has an empty handle".
+    """
     team = get_team()
     target = find_target(mention.text, team)
     if target:
         return target
-    return next(m for m in team if not m.profile.handle)
+    for member in team:
+        if member.profile.fallback:
+            return member
+    raise RuntimeError("No fallback member registered")
 
 
 def find_member(agent_id: Optional[str]) -> Optional[TeamMember]:
-    """
-    Find a team member by agent ID.
-    
-    Parameters:
-    	agent_id (Optional[str]): The ID of the agent to locate.
-    
-    Returns:
-    	Optional[TeamMember]: The matching team member, or `None` if no member has the specified ID.
-    """
     if not agent_id:
         return None
     for member in get_team():
@@ -75,11 +71,7 @@ def find_member(agent_id: Optional[str]) -> Optional[TeamMember]:
 
 
 def register_team() -> None:
-    """
-    Register all team members with the timeline server's A2A registry.
-    
-    The registry URL is read from the `TIMELINE_API_URL` environment variable, defaulting to the local timeline server. Each member is retried up to three times when registration requests fail.
-    """
+    """Register every team member in the timeline server's A2A registry."""
     timeline_url = os.getenv("TIMELINE_API_URL", "http://127.0.0.1:8080")
     for member in get_team():
         profile = member.profile
@@ -97,7 +89,10 @@ def register_team() -> None:
         for attempt in range(3):
             try:
                 response = requests.post(
-                    f"{timeline_url}/v1/a2a/agents", json=payload, timeout=10
+                    f"{timeline_url}/v1/a2a/agents",
+                    json=payload,
+                    headers=timeline_headers(),
+                    timeout=10,
                 )
                 # 4xx/5xx (e.g. server still booting) must retry too.
                 response.raise_for_status()

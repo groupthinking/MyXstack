@@ -1,8 +1,8 @@
-"""General agent — the fallback when no team member is tagged.
+"""Legacy general agent — owner of pre-Hermes `x-agent` cards.
 
-Preserves the original listener behavior: send the whole mention to Grok
-with MCP tools and reply with whatever it produces, logging a card with
-Approve/Reject/Snooze follow-up actions.
+New untagged mentions go to Hermes, not here. This member stays on the
+roster so the dispatcher can still execute Approve/Reject/Snooze on cards
+created before Hermes became the fallback.
 """
 
 from typing import Any, Dict, Optional
@@ -20,7 +20,6 @@ from agents.base import (
 
 class GeneralAgent(TeamMember):
     def __init__(self):
-        """Initialize the fallback X agent with its profile and supported tags."""
         super().__init__(
             AgentProfile(
                 id="x-agent",
@@ -33,15 +32,6 @@ class GeneralAgent(TeamMember):
         )
 
     def handle_mention(self, mention: MentionContext) -> AgentReply:
-        """
-        Generate a reply and follow-up action card for a mention.
-        
-        Parameters:
-        	mention (MentionContext): The mention content and associated conversation metadata.
-        
-        Returns:
-        	AgentReply: The generated reply and an action card with approval, rejection, and snooze actions.
-        """
         reply = grok_chat(
             "You are an autonomous X agent bot. You were mentioned in the post below.\n"
             "Analyze the request/intent. Use available tools to respond helpfully.\n"
@@ -49,7 +39,7 @@ class GeneralAgent(TeamMember):
             f"{wrap_untrusted(mention.text)}"
         )
         if not reply:
-            reply = "Thinking..."
+            reply = "Sorry, I'm having trouble processing that. Try again or DM me."
         card = {
             "title": f"New mention {mention.mention_id or ''}".strip(),
             "body": mention.text,
@@ -65,15 +55,11 @@ class GeneralAgent(TeamMember):
         return AgentReply(text=reply, card=card)
 
     def execute_action(self, item: Dict[str, Any], action: str) -> Optional[str]:
-        """Execute an action on one of this agent's timeline cards.
-        
-        Parameters:
-            item (Dict[str, Any]): Timeline item associated with the action.
-            action (str): Action selected for the timeline item.
-        
-        Returns:
-            Optional[str]: Workflow status update, or an acknowledgment if no update is produced.
-        """
+        """Run the legacy generic Grok workflow for this agent's own cards.
+
+        The dispatcher fails closed for member-owned cards, so the general
+        agent must handle its Approve/Reject/Snooze actions itself — this
+        is the same behavior the pre-team dispatcher fallback provided."""
         result = grok_chat(
             f"You are a workflow agent. A user took the action '{action}' on "
             f"timeline item {item.get('id', '?')} titled "

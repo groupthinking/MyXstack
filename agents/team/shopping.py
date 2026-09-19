@@ -17,7 +17,10 @@ from agents.base import (
     AgentReply,
     MentionContext,
     TeamMember,
+    approve_reject,
+    build_card,
     grok_chat,
+    text_block,
     truncate_for_reply,
     wrap_untrusted,
 )
@@ -27,7 +30,6 @@ _BUDGET = re.compile(r"under\s+\$(?P<budget>\d+(?:\.\d+)?)", re.IGNORECASE)
 
 class ShoppingAgent(TeamMember):
     def __init__(self):
-        """Initialize the shopping agent with its profile and commerce-related tags."""
         super().__init__(
             AgentProfile(
                 id="shopping",
@@ -40,15 +42,6 @@ class ShoppingAgent(TeamMember):
         )
 
     def handle_mention(self, mention: MentionContext) -> AgentReply:
-        """
-        Generate shopping recommendations for a mention and attach an approval-gated purchase card.
-        
-        Parameters:
-            mention (MentionContext): Mention containing the user's shopping request.
-        
-        Returns:
-            AgentReply: A reply with product recommendations and a purchase action card, or an offline message when recommendations are unavailable.
-        """
         budget_match = _BUDGET.search(mention.text)
         budget = f" with a budget of ${budget_match.group('budget')}" if budget_match else ""
         picks = grok_chat(
@@ -60,31 +53,26 @@ class ShoppingAgent(TeamMember):
         if not picks:
             return AgentReply(text="Shopping agent is offline (no XAI_API_KEY configured).")
 
-        card = {
-            "title": "Shopping picks",
-            "body": f"Request:\n{mention.text}\n\nPicks:\n{picks}",
-            "actions": ["Approve Purchase", "Reject"],
-            "metadata": {
+        card = build_card(
+            title="Shopping picks",
+            blocks=[
+                text_block(mention.text, label="Request"),
+                text_block(picks, label="Picks"),
+            ],
+            # Labels must stay in sync with execute_action() below, which
+            # matches on them rather than on the action id.
+            actions=approve_reject("Approve Purchase", "Reject"),
+            metadata={
                 "agent_id": self.profile.id,
                 "action_type": "purchase",
                 "mention_id": mention.mention_id,
                 "author_id": mention.author_id,
             },
-        }
+        )
         reply = truncate_for_reply(picks, suffix="… Full list on your timeline.")
         return AgentReply(text=reply, card=card)
 
     def execute_action(self, item: Dict[str, Any], action: str) -> Optional[str]:
-        """
-        Process an approval or rejection action for a purchase intent card.
-        
-        Parameters:
-            item (Dict[str, Any]): Card data containing purchase intent metadata.
-            action (str): Action selected for the card.
-        
-        Returns:
-            Optional[str]: A status message for a recognized purchase action, or `None` when the card or action is unsupported.
-        """
         metadata = item.get("metadata") or {}
         if metadata.get("action_type") != "purchase":
             return None

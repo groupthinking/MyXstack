@@ -19,7 +19,11 @@ from agents.base import (
     AgentReply,
     MentionContext,
     TeamMember,
+    approve_reject,
+    build_card,
+    facts_block,
     grok_chat,
+    text_block,
 )
 from agents.broker import PaperBroker
 
@@ -38,15 +42,6 @@ USAGE = "Format: @Tradedesk $TICKER buy|sell [quantity] — e.g. @Tradedesk $TSL
 
 
 def parse_trade_command(text: str) -> Optional[Dict[str, Any]]:
-    """
-    Parse a trade command and extract its ticker, side, and quantity.
-    
-    Parameters:
-    	text (str): Text containing a tagged buy or sell command.
-    
-    Returns:
-    	(dict[str, Any] | None): A dictionary with the normalized ticker, side, and positive finite quantity, or `None` if the command is invalid.
-    """
     match = _TICKER_FIRST.search(text) or _SIDE_FIRST.search(text)
     if not match:
         return None
@@ -64,7 +59,6 @@ def parse_trade_command(text: str) -> Optional[Dict[str, Any]]:
 
 class TradeDeskAgent(TeamMember):
     def __init__(self, broker: Optional[PaperBroker] = None):
-        """Initialize the trading agent with the supplied broker or a paper-trading broker by default."""
         super().__init__(
             AgentProfile(
                 id="tradedesk",
@@ -78,18 +72,6 @@ class TradeDeskAgent(TeamMember):
         self.broker = broker or PaperBroker()
 
     def handle_mention(self, mention: MentionContext) -> AgentReply:
-        """
-        Create an approval-gated trade proposal from a mention.
-        
-        Parameters:
-            mention (MentionContext): Mention containing the trade command, text, identifier,
-                and author information.
-        
-        Returns:
-            AgentReply: A parse-error response when the mention is invalid; otherwise, a
-                response containing a trade proposal card with approval and rejection actions.
-                The card may include market context when Grok enrichment is enabled.
-        """
         trade = parse_trade_command(mention.text)
         if not trade:
             return AgentReply(text=f"Couldn't parse a trade. {USAGE}")
@@ -104,15 +86,30 @@ class TradeDeskAgent(TeamMember):
                 f"relevant to a proposed {trade['side']} order. Facts only, no advice."
             )
 
-        body = f"Requested via X mention {mention.mention_id or '?'}:\n\n{mention.text}"
+        blocks = [
+            facts_block(
+                {
+                    "Ticker": f"${trade['ticker']}",
+                    "Side": trade["side"].upper(),
+                    "Quantity": f"{trade['quantity']:g}",
+                    "Venue": "paper (simulated)",
+                },
+                label="Order",
+            ),
+            text_block(
+                mention.text,
+                label=f"Requested via X mention {mention.mention_id or '?'}",
+            ),
+        ]
         if context:
-            body += f"\n\nMarket context (Grok):\n{context}"
+            blocks.append(text_block(context, label="Market context (Grok)"))
 
-        card = {
-            "title": f"Trade proposal: {summary}",
-            "body": body,
-            "actions": ["Approve", "Reject"],
-            "metadata": {
+        card = build_card(
+            title=f"Trade proposal: {summary}",
+            blocks=blocks,
+            # execute_action() below matches these labels exactly.
+            actions=approve_reject("Approve", "Reject"),
+            metadata={
                 "agent_id": self.profile.id,
                 "action_type": "trade",
                 "ticker": trade["ticker"],
@@ -121,7 +118,7 @@ class TradeDeskAgent(TeamMember):
                 "mention_id": mention.mention_id,
                 "author_id": mention.author_id,
             },
-        }
+        )
         reply = (
             f"📋 Trade proposal logged: {summary}. Pending human approval on the "
             f"timeline. (Paper trading — no live orders.)"
@@ -129,16 +126,6 @@ class TradeDeskAgent(TeamMember):
         return AgentReply(text=reply, card=card)
 
     def execute_action(self, item: Dict[str, Any], action: str) -> Optional[str]:
-        """
-        Execute or reject a validated trade proposal based on the requested action.
-        
-        Parameters:
-        	item (Dict[str, Any]): Trade proposal card containing trade metadata.
-        	action (str): Approval or rejection action to apply.
-        
-        Returns:
-        	str | None: A status message for a handled trade action, or `None` for unrelated cards or unsupported actions.
-        """
         metadata = item.get("metadata") or {}
         if metadata.get("action_type") != "trade":
             return None
@@ -152,7 +139,7 @@ class TradeDeskAgent(TeamMember):
             return f"⚠️ Invalid side '{side}' on trade card {item.get('id', '?')}; nothing executed."
         try:
             quantity = float(metadata.get("quantity", 1))
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, OverflowError):
             return f"⚠️ Invalid quantity on trade card {item.get('id', '?')}; nothing executed."
         if not math.isfinite(quantity) or quantity <= 0:
             return f"⚠️ Invalid quantity {quantity:g} on trade card {item.get('id', '?')}; nothing executed."

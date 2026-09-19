@@ -7,7 +7,6 @@ updates:
     open-pull-requests-limit: 10
     labels:
       - "dependencies"
-      - "auto-merge"
     groups:
       minor-and-patch:
         update-types:
@@ -21,7 +20,6 @@ updates:
     open-pull-requests-limit: 5
     labels:
       - "dependencies"
-      - "auto-merge"
 
   - package-ecosystem: "github-actions"
     directory: "/"
@@ -29,4 +27,3 @@ updates:
       interval: "weekly"
     labels:
       - "dependencies"
-      - "auto-merge"

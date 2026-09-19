@@ -10,6 +10,7 @@ from xai_sdk import Client
 from xai_sdk.chat import user
 from xai_sdk.tools import mcp
 
+from agents.base import timeline_headers
 from agents.registry import find_member
 
 LAST_SEEN_PATH = Path(os.getenv("XMCP_DISPATCH_LAST_SEEN", "~/.xmcp/dispatch_last_seen.txt")).expanduser()
@@ -27,31 +28,20 @@ def save_last_seen(value: str) -> None:
 
 
 def load_last_seen() -> Optional[str]:
-    """Load the persisted timestamp of the last processed message.
-    
-    Returns:
-    	str: The stripped timestamp, or `None` if the file is missing or empty.
-    """
     if not LAST_SEEN_PATH.exists():
         return None
     return LAST_SEEN_PATH.read_text(encoding="utf-8").strip() or None
 
 
 def get_timeline_item(item_id: str) -> Optional[Dict]:
-    """
-    Fetch a timeline item by its identifier.
-    
-    Parameters:
-    	item_id (str): Identifier of the timeline item to fetch.
-    
-    Returns:
-    	Optional[Dict]: The timeline item data, or None if the item cannot be retrieved or parsed.
-    """
     timeline_url = os.getenv("TIMELINE_API_URL", "http://127.0.0.1:8080")
     try:
-        response = requests.get(f"{timeline_url}/v1/timeline/items/{item_id}", timeout=10)
-        if response.status_code != 200:
-            return None
+        response = requests.get(
+            f"{timeline_url}/v1/timeline/items/{item_id}",
+            headers=timeline_headers(),
+            timeout=10,
+        )
+        response.raise_for_status()
         return response.json()
     except (requests.RequestException, ValueError) as exc:
         print(f"Could not fetch timeline item {item_id}: {exc}", flush=True)
@@ -59,17 +49,12 @@ def get_timeline_item(item_id: str) -> Optional[Dict]:
 
 
 def get_messages(agent_id: str) -> list[Dict]:
-    """
-    Retrieve messages addressed to an agent from the timeline service.
-    
-    Parameters:
-    	agent_id (str): Identifier of the agent whose messages to retrieve.
-    
-    Returns:
-    	list[Dict]: Messages returned by the service, or an empty list if the request is unsuccessful.
-    """
     timeline_url = os.getenv("TIMELINE_API_URL", "http://127.0.0.1:8080")
-    response = requests.get(f"{timeline_url}/v1/a2a/agents/{agent_id}/messages", timeout=10)
+    response = requests.get(
+        f"{timeline_url}/v1/a2a/agents/{agent_id}/messages",
+        headers=timeline_headers(),
+        timeout=10,
+    )
     if response.status_code != 200:
         return []
     payload = response.json()
@@ -78,7 +63,7 @@ def get_messages(agent_id: str) -> list[Dict]:
 
 def send_message(from_agent: str, to: str, content: str, metadata: Dict) -> None:
     timeline_url = os.getenv("TIMELINE_API_URL", "http://127.0.0.1:8080")
-    requests.post(
+    response = requests.post(
         f"{timeline_url}/v1/a2a/messages",
         json={
             "from": from_agent,
@@ -87,8 +72,10 @@ def send_message(from_agent: str, to: str, content: str, metadata: Dict) -> None
             "content": content,
             "metadata": metadata,
         },
+        headers=timeline_headers(),
         timeout=10,
     )
+    response.raise_for_status()
 
 
 def ensure_agent_registered(agent_id: str) -> None:
@@ -101,16 +88,23 @@ def ensure_agent_registered(agent_id: str) -> None:
         "endpoint": "local",
         "tags": ["mcp", "orchestrator"],
     }
-    requests.post(f"{timeline_url}/v1/a2a/agents", json=payload, timeout=10)
+    requests.post(
+        f"{timeline_url}/v1/a2a/agents",
+        json=payload,
+        headers=timeline_headers(),
+        timeout=10,
+    )
 
 
 def update_timeline_item(item_id: str, metadata: Dict) -> None:
     timeline_url = os.getenv("TIMELINE_API_URL", "http://127.0.0.1:8080")
-    requests.patch(
+    response = requests.patch(
         f"{timeline_url}/v1/timeline/items/{item_id}",
         json={"metadata": metadata},
+        headers=timeline_headers(),
         timeout=10,
     )
+    response.raise_for_status()
 
 
 def call_grok(prompt: str) -> str:
@@ -143,13 +137,102 @@ def _parse_time(value: Optional[str]) -> Optional[datetime]:
         return None
 
 
+def _handle_message(
+    agent_id: str, message: dict, last_seen: Optional[datetime]
+) -> tuple[Optional[datetime], bool]:
+    """Process one dispatch message.
+
+    Returns `(new_last_seen, should_stop)`. `should_stop` is true when the
+    action must remain retryable, so the watermark must not advance and newer
+    messages must wait for a later poll.
+    """
+    created_at = _parse_time(message.get("created_at"))
+    if last_seen and created_at and created_at <= last_seen:
+        return None, False
+    if message.get("type") != "timeline_action":
+        return None, False
+
+    metadata = message.get("metadata", {})
+    item_id = metadata.get("timeline_item_id")
+    action = metadata.get("action")
+
+    # Structured path: if the card belongs to a team member, let it
+    # execute the action (e.g. Tradedesk fills an approved trade).
+    result = None
+    execution_failed = False
+    item = get_timeline_item(item_id) if item_id else None
+    # Fail closed when the card context can't be loaded: ownership
+    # is unknown, so the generic executor must not run.
+    if item_id and item is None:
+        result = f"Could not load timeline item {item_id}; nothing executed."
+        execution_failed = True
+    item_meta = (item.get("metadata") or {}) if item else {}
+    if item and action and item_meta.get("processed_action"):
+        # A processed item is terminal: skip replays of the same
+        # action AND late conflicting actions (e.g. Reject after an
+        # Approve already executed).
+        print(
+            f"Skipping '{action}' on item {item_id}: already processed "
+            f"'{item_meta['processed_action']}'",
+            flush=True,
+        )
+        return created_at or datetime.now(timezone.utc), False
+    owned_agent_id = item_meta.get("agent_id")
+    if item and action and owned_agent_id:
+        owner = find_member(owned_agent_id)
+        if owner:
+            try:
+                result = owner.execute_action(item, action)
+            except Exception as exc:
+                execution_failed = True
+                result = f"Agent {owner.profile.id} failed to execute '{action}': {exc}"
+        # Fail closed: a card owned by a member must never fall
+        # through to the generic Grok executor, or the member's
+        # safety policy (paper-only trades, intent-only purchases)
+        # would be bypassed.
+        if result is None:
+            result = (
+                f"Action '{action}' not handled by agent {owned_agent_id}; "
+                "nothing executed (owned cards never use the generic fallback)."
+            )
+
+    # Fallback: legacy generic Grok execution.
+    if result is None:
+        prompt = f"""
+You are a workflow agent. A user took the action '{action}' on timeline item {item_id}.
+Use MCP tools to execute any required external steps. Return a concise status update.
+"""
+        result = call_grok(prompt)
+        if result == "Missing XAI_API_KEY.":
+            # Grok never ran; don't consume the action.
+            execution_failed = True
+
+    try:
+        if item_id:
+            # A failed execution must stay retryable: record the result
+            # but don't mark the action processed.
+            update = {"mcp_result": result}
+            if not execution_failed:
+                update["processed_action"] = action
+            update_timeline_item(item_id, update)
+
+        send_message(
+            from_agent=agent_id,
+            to=message.get("from", "timeline-ui"),
+            content=result,
+            metadata={"timeline_item_id": item_id, "action": action},
+        )
+    except requests.RequestException as exc:
+        print(f"Could not persist dispatch result for item {item_id}: {exc}", flush=True)
+        execution_failed = True
+
+    if execution_failed:
+        return None, True
+
+    return created_at or datetime.now(timezone.utc), False
+
+
 def main() -> None:
-    """
-    Polls for timeline actions, executes them through the appropriate agent or fallback executor, and records their results.
-    
-    The dispatcher registers the configured agent, processes new actions, prevents replay of processed actions, and persists processing progress. Failed executions remain retryable.
-    
-    """
     load_env()
     agent_id = os.getenv("MCP_DISPATCH_AGENT_ID", "mcp-orchestrator")
     last_seen = _parse_time(load_last_seen())
@@ -158,86 +241,12 @@ def main() -> None:
     while True:
         messages = get_messages(agent_id)
         for message in messages:
-            created_at = _parse_time(message.get("created_at"))
-            if last_seen and created_at and created_at <= last_seen:
-                continue
-            if message.get("type") != "timeline_action":
-                continue
-
-            metadata = message.get("metadata", {})
-            item_id = metadata.get("timeline_item_id")
-            action = metadata.get("action")
-
-            # Structured path: if the card belongs to a team member, let it
-            # execute the action (e.g. Tradedesk fills an approved trade).
-            result = None
-            execution_failed = False
-            item = get_timeline_item(item_id) if item_id else None
-            # Fail closed when the card context can't be loaded: ownership
-            # is unknown, so the generic executor must not run.
-            if item_id and item is None:
-                result = f"Could not load timeline item {item_id}; nothing executed."
-                execution_failed = True
-            item_meta = (item.get("metadata") or {}) if item else {}
-            if item and action and item_meta.get("processed_action"):
-                # A processed item is terminal: skip replays of the same
-                # action AND late conflicting actions (e.g. Reject after an
-                # Approve already executed).
-                print(
-                    f"Skipping '{action}' on item {item_id}: already processed "
-                    f"'{item_meta['processed_action']}'",
-                    flush=True,
-                )
-                last_seen = created_at or datetime.now(timezone.utc)
+            new_last_seen, stop_processing = _handle_message(agent_id, message, last_seen)
+            if new_last_seen:
+                last_seen = new_last_seen
                 save_last_seen(last_seen.isoformat())
-                continue
-            owned_agent_id = item_meta.get("agent_id")
-            if item and action and owned_agent_id:
-                owner = find_member(owned_agent_id)
-                if owner:
-                    try:
-                        result = owner.execute_action(item, action)
-                    except Exception as exc:
-                        execution_failed = True
-                        result = f"Agent {owner.profile.id} failed to execute '{action}': {exc}"
-                # Fail closed: a card owned by a member must never fall
-                # through to the generic Grok executor, or the member's
-                # safety policy (paper-only trades, intent-only purchases)
-                # would be bypassed.
-                if result is None:
-                    result = (
-                        f"Action '{action}' not handled by agent {owned_agent_id}; "
-                        "nothing executed (owned cards never use the generic fallback)."
-                    )
-
-            # Fallback: legacy generic Grok execution.
-            if result is None:
-                prompt = f"""
-You are a workflow agent. A user took the action '{action}' on timeline item {item_id}.
-Use MCP tools to execute any required external steps. Return a concise status update.
-"""
-                result = call_grok(prompt)
-                if result == "Missing XAI_API_KEY.":
-                    # Grok never ran; don't consume the action.
-                    execution_failed = True
-
-            if item_id:
-                # A failed execution must stay retryable: record the result
-                # but don't mark the action processed.
-                update = {"mcp_result": result}
-                if not execution_failed:
-                    update["processed_action"] = action
-                update_timeline_item(item_id, update)
-
-            send_message(
-                from_agent=agent_id,
-                to=message.get("from", "timeline-ui"),
-                content=result,
-                metadata={"timeline_item_id": item_id, "action": action},
-            )
-
-            last_seen = created_at or datetime.now(timezone.utc)
-            save_last_seen(last_seen.isoformat())
+            if stop_processing:
+                break
 
         time.sleep(5)
 

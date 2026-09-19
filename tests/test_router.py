@@ -19,9 +19,10 @@ def test_route_requires_word_boundary():
     assert member is None
 
 
-def test_route_falls_back_to_general_agent():
+def test_route_falls_back_to_hermes():
     member = route_mention(MentionContext(text="@MyXstack what's the weather?"))
-    assert member.profile.id == "x-agent"
+    assert member.profile.id == "hermes"
+    assert member.profile.fallback is True
 
 
 def test_route_to_bot():
@@ -32,10 +33,12 @@ def test_route_to_bot():
 
 def test_team_classification():
     kinds = {m.profile.id: m.profile.kind for m in get_team()}
+    assert kinds["hermes"] == "orchestrator"
     assert kinds["tradedesk"] == "agent"
     assert kinds["research"] == "agent"
     assert kinds["shopping"] == "agent"
     assert kinds["tickerbot"] == "bot"
+    assert kinds["x-agent"] == "agent"
 
 
 def test_multi_handle_routes_to_earliest_tag():
@@ -48,5 +51,6 @@ def test_multi_handle_routes_to_earliest_tag():
 
 def test_find_member():
     assert find_member("tradedesk").profile.name == "Trade Desk"
+    assert find_member("hermes").profile.name == "Hermes"
     assert find_member("nope") is None
     assert find_member(None) is None

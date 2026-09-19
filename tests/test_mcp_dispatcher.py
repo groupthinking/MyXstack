@@ -24,11 +24,15 @@ class _StubMember:
         return self._result
 
 
-def _prepare_common_mocks(monkeypatch, message, updates, sent):
+def _prepare_common_mocks(monkeypatch, messages, updates, sent, saved=None):
     monkeypatch.setattr(mcp_dispatcher, "ensure_agent_registered", lambda agent_id: None)
     monkeypatch.setattr(mcp_dispatcher, "load_last_seen", lambda: None)
-    monkeypatch.setattr(mcp_dispatcher, "save_last_seen", lambda value: None)
-    monkeypatch.setattr(mcp_dispatcher, "get_messages", lambda agent_id: [message])
+    monkeypatch.setattr(
+        mcp_dispatcher, "save_last_seen", lambda value: None if saved is None else saved.append(value)
+    )
+    if isinstance(messages, dict):
+        messages = [messages]
+    monkeypatch.setattr(mcp_dispatcher, "get_messages", lambda agent_id: messages)
     monkeypatch.setattr(
         mcp_dispatcher, "update_timeline_item", lambda item_id, u: updates.append((item_id, u))
     )
@@ -51,29 +55,31 @@ def _prepare_common_mocks(monkeypatch, message, updates, sent):
 
 def test_get_timeline_item_returns_json_on_200(monkeypatch):
     class FakeResponse:
-        status_code = 200
+        def raise_for_status(self):
+            return None
 
         def json(self):
             return {"id": "abc", "metadata": {"agent_id": "tradedesk"}}
 
-    monkeypatch.setattr(mcp_dispatcher.requests, "get", lambda url, timeout: FakeResponse())
+    monkeypatch.setattr(mcp_dispatcher.requests, "get", lambda *args, **kwargs: FakeResponse())
     item = mcp_dispatcher.get_timeline_item("abc")
     assert item == {"id": "abc", "metadata": {"agent_id": "tradedesk"}}
 
 
 def test_get_timeline_item_returns_none_on_non_200(monkeypatch):
     class FakeResponse:
-        status_code = 404
+        def raise_for_status(self):
+            raise requests.HTTPError("404 not found")
 
         def json(self):
             raise AssertionError("should not be called")
 
-    monkeypatch.setattr(mcp_dispatcher.requests, "get", lambda url, timeout: FakeResponse())
+    monkeypatch.setattr(mcp_dispatcher.requests, "get", lambda *args, **kwargs: FakeResponse())
     assert mcp_dispatcher.get_timeline_item("missing") is None
 
 
 def test_get_timeline_item_returns_none_on_request_exception(monkeypatch):
-    def fake_get(url, timeout):
+    def fake_get(*args, **kwargs):
         raise requests.ConnectionError("down")
 
     monkeypatch.setattr(mcp_dispatcher.requests, "get", fake_get)
@@ -82,12 +88,13 @@ def test_get_timeline_item_returns_none_on_request_exception(monkeypatch):
 
 def test_get_timeline_item_returns_none_on_invalid_json(monkeypatch):
     class FakeResponse:
-        status_code = 200
+        def raise_for_status(self):
+            return None
 
         def json(self):
             raise ValueError("bad json")
 
-    monkeypatch.setattr(mcp_dispatcher.requests, "get", lambda url, timeout: FakeResponse())
+    monkeypatch.setattr(mcp_dispatcher.requests, "get", lambda *args, **kwargs: FakeResponse())
     assert mcp_dispatcher.get_timeline_item("abc") is None
 
 
@@ -303,3 +310,29 @@ def test_main_ignores_non_timeline_action_messages(monkeypatch):
 
     assert updates == []
     assert sent == []
+
+
+def test_main_holds_watermark_and_stops_after_retryable_failure(monkeypatch):
+    first = {
+        "from": "timeline-ui",
+        "created_at": "2024-01-01T00:00:00+00:00",
+        "type": "timeline_action",
+        "metadata": {"timeline_item_id": "item-9", "action": "Approve"},
+    }
+    second = {
+        "from": "timeline-ui",
+        "created_at": "2024-01-02T00:00:00+00:00",
+        "type": "timeline_action",
+        "metadata": {"timeline_item_id": "item-10", "action": "Approve"},
+    }
+    updates, sent, saved = [], [], []
+    _prepare_common_mocks(monkeypatch, [first, second], updates, sent, saved)
+    monkeypatch.setattr(mcp_dispatcher, "get_timeline_item", lambda item_id: {"id": item_id, "metadata": {}})
+    monkeypatch.setattr(mcp_dispatcher, "call_grok", lambda prompt: "Missing XAI_API_KEY.")
+
+    with pytest.raises(_StopLoop):
+        mcp_dispatcher.main()
+
+    assert updates == [("item-9", {"mcp_result": "Missing XAI_API_KEY."})]
+    assert sent[0]["metadata"]["timeline_item_id"] == "item-9"
+    assert saved == []
