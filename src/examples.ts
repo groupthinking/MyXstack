@@ -33,7 +33,7 @@ async function example1_fetchAndAnalyzeMention() {
       console.log(`\nThread has ${thread.replies.length + 1} posts`);
       
       // Analyze with Grok
-      const analysis = await grok.analyzeAndDecide(mention.post.text, thread);
+      const analysis = await grok.analyzeAndDecide(mention.post.text, thread, mention.post.id);
       
       console.log(`\nGrok's Decision:`);
       console.log(`  Action: ${analysis.action.type}`);
@@ -139,7 +139,7 @@ async function example5_batchProcessMentions() {
     const thread = await xClient.fetchThread(conversationId);
     
     if (thread) {
-      const analysis = await grok.analyzeAndDecide(mention.post.text, thread);
+      const analysis = await grok.analyzeAndDecide(mention.post.text, thread, mention.post.id);
       console.log(`  → Action: ${analysis.action.type} (${(analysis.confidence * 100).toFixed(0)}% confidence)`);
       
       // In a real scenario, you might execute the action here

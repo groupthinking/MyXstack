@@ -8,6 +8,10 @@ import { AutonomousAgent } from './services/agent.js';
 import { XMCPServer } from './mcp/server.js';
 
 async function main() {
+  // Redirect console.log to stderr so it doesn't conflict with
+  // MCP StdioServerTransport which uses stdout for protocol messages
+  console.log = (...args: unknown[]) => console.error(...args);
+
   console.log('═══════════════════════════════════════════════════');
   console.log('  MyXstack - Autonomous AI Agent on X (Twitter)');
   console.log('═══════════════════════════════════════════════════\n');
@@ -26,6 +30,7 @@ async function main() {
     // Initialize MCP server (runs in background)
     console.log('🌐 Initializing xMCP server...');
     const mcpServer = new XMCPServer(config.xApiConfig);
+    await mcpServer.start();
     console.log('✅ xMCP server ready\n');
 
     // Initialize and start autonomous agent

@@ -1,0 +1,239 @@
+import os
+import time
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Dict, Optional
+
+import requests
+from dotenv import load_dotenv
+from xai_sdk import Client
+from xai_sdk.chat import user
+from xai_sdk.tools import mcp
+
+from agents.base import timeline_headers
+from agents.registry import find_member
+
+LAST_SEEN_PATH = Path(os.getenv("XMCP_DISPATCH_LAST_SEEN", "~/.xmcp/dispatch_last_seen.txt")).expanduser()
+
+
+def load_env() -> None:
+    env_path = Path(__file__).resolve().parent / ".env"
+    if env_path.exists():
+        load_dotenv(env_path)
+
+
+def save_last_seen(value: str) -> None:
+    LAST_SEEN_PATH.parent.mkdir(parents=True, exist_ok=True)
+    LAST_SEEN_PATH.write_text(value, encoding="utf-8")
+
+
+def load_last_seen() -> Optional[str]:
+    if not LAST_SEEN_PATH.exists():
+        return None
+    return LAST_SEEN_PATH.read_text(encoding="utf-8").strip() or None
+
+
+def get_timeline_item(item_id: str) -> Optional[Dict]:
+    timeline_url = os.getenv("TIMELINE_API_URL", "http://127.0.0.1:8080")
+    try:
+        response = requests.get(
+            f"{timeline_url}/v1/timeline/items/{item_id}",
+            headers=timeline_headers(),
+            timeout=10,
+        )
+        if response.status_code != 200:
+            return None
+        return response.json()
+    except (requests.RequestException, ValueError) as exc:
+        print(f"Could not fetch timeline item {item_id}: {exc}", flush=True)
+        return None
+
+
+def get_messages(agent_id: str) -> list[Dict]:
+    timeline_url = os.getenv("TIMELINE_API_URL", "http://127.0.0.1:8080")
+    response = requests.get(
+        f"{timeline_url}/v1/a2a/agents/{agent_id}/messages",
+        headers=timeline_headers(),
+        timeout=10,
+    )
+    if response.status_code != 200:
+        return []
+    payload = response.json()
+    return payload.get("messages", [])
+
+
+def send_message(from_agent: str, to: str, content: str, metadata: Dict) -> None:
+    timeline_url = os.getenv("TIMELINE_API_URL", "http://127.0.0.1:8080")
+    requests.post(
+        f"{timeline_url}/v1/a2a/messages",
+        json={
+            "from": from_agent,
+            "to": to,
+            "type": "mcp_result",
+            "content": content,
+            "metadata": metadata,
+        },
+        headers=timeline_headers(),
+        timeout=10,
+    )
+
+
+def ensure_agent_registered(agent_id: str) -> None:
+    timeline_url = os.getenv("TIMELINE_API_URL", "http://127.0.0.1:8080")
+    payload = {
+        "id": agent_id,
+        "name": "MCP Orchestrator",
+        "description": "Dispatches timeline actions to MCP-enabled tools.",
+        "status": "online",
+        "endpoint": "local",
+        "tags": ["mcp", "orchestrator"],
+    }
+    requests.post(
+        f"{timeline_url}/v1/a2a/agents",
+        json=payload,
+        headers=timeline_headers(),
+        timeout=10,
+    )
+
+
+def update_timeline_item(item_id: str, metadata: Dict) -> None:
+    timeline_url = os.getenv("TIMELINE_API_URL", "http://127.0.0.1:8080")
+    requests.patch(
+        f"{timeline_url}/v1/timeline/items/{item_id}",
+        json={"metadata": metadata},
+        headers=timeline_headers(),
+        timeout=10,
+    )
+
+
+def call_grok(prompt: str) -> str:
+    api_key = os.getenv("XAI_API_KEY", "").strip()
+    if not api_key:
+        return "Missing XAI_API_KEY."
+    model = os.getenv("XAI_MODEL", "grok-4-1-fast")
+    server_url = os.getenv("MCP_SERVER_URL", "http://127.0.0.1:8000/mcp")
+
+    client = Client(api_key=api_key)
+    chat = client.chat.create(
+        model=model,
+        tools=[mcp(server_url=server_url)],
+    )
+    chat.append(user(prompt))
+
+    response_text = ""
+    for _, chunk in chat.stream():
+        if chunk.content:
+            response_text += chunk.content
+    return response_text.strip() or "No response."
+
+
+def _parse_time(value: Optional[str]) -> Optional[datetime]:
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(value)
+    except ValueError:
+        return None
+
+
+def _handle_message(agent_id: str, message: dict, last_seen: Optional[datetime]) -> Optional[datetime]:
+    """Process a single dispatch message; returns the new last_seen timestamp
+    (or None if the message did not advance it)."""
+    created_at = _parse_time(message.get("created_at"))
+    if last_seen and created_at and created_at <= last_seen:
+        return None
+    if message.get("type") != "timeline_action":
+        return None
+
+    metadata = message.get("metadata", {})
+    item_id = metadata.get("timeline_item_id")
+    action = metadata.get("action")
+
+    # Structured path: if the card belongs to a team member, let it
+    # execute the action (e.g. Tradedesk fills an approved trade).
+    result = None
+    execution_failed = False
+    item = get_timeline_item(item_id) if item_id else None
+    # Fail closed when the card context can't be loaded: ownership
+    # is unknown, so the generic executor must not run.
+    if item_id and item is None:
+        result = f"Could not load timeline item {item_id}; nothing executed."
+        execution_failed = True
+    item_meta = (item.get("metadata") or {}) if item else {}
+    if item and action and item_meta.get("processed_action"):
+        # A processed item is terminal: skip replays of the same
+        # action AND late conflicting actions (e.g. Reject after an
+        # Approve already executed).
+        print(
+            f"Skipping '{action}' on item {item_id}: already processed "
+            f"'{item_meta['processed_action']}'",
+            flush=True,
+        )
+        return created_at or datetime.now(timezone.utc)
+    owned_agent_id = item_meta.get("agent_id")
+    if item and action and owned_agent_id:
+        owner = find_member(owned_agent_id)
+        if owner:
+            try:
+                result = owner.execute_action(item, action)
+            except Exception as exc:
+                execution_failed = True
+                result = f"Agent {owner.profile.id} failed to execute '{action}': {exc}"
+        # Fail closed: a card owned by a member must never fall
+        # through to the generic Grok executor, or the member's
+        # safety policy (paper-only trades, intent-only purchases)
+        # would be bypassed.
+        if result is None:
+            result = (
+                f"Action '{action}' not handled by agent {owned_agent_id}; "
+                "nothing executed (owned cards never use the generic fallback)."
+            )
+
+    # Fallback: legacy generic Grok execution.
+    if result is None:
+        prompt = f"""
+You are a workflow agent. A user took the action '{action}' on timeline item {item_id}.
+Use MCP tools to execute any required external steps. Return a concise status update.
+"""
+        result = call_grok(prompt)
+        if result == "Missing XAI_API_KEY.":
+            # Grok never ran; don't consume the action.
+            execution_failed = True
+
+    if item_id:
+        # A failed execution must stay retryable: record the result
+        # but don't mark the action processed.
+        update = {"mcp_result": result}
+        if not execution_failed:
+            update["processed_action"] = action
+        update_timeline_item(item_id, update)
+
+    send_message(
+        from_agent=agent_id,
+        to=message.get("from", "timeline-ui"),
+        content=result,
+        metadata={"timeline_item_id": item_id, "action": action},
+    )
+
+    return created_at or datetime.now(timezone.utc)
+
+
+def main() -> None:
+    load_env()
+    agent_id = os.getenv("MCP_DISPATCH_AGENT_ID", "mcp-orchestrator")
+    last_seen = _parse_time(load_last_seen())
+    ensure_agent_registered(agent_id)
+
+    while True:
+        messages = get_messages(agent_id)
+        for message in messages:
+            new_last_seen = _handle_message(agent_id, message, last_seen)
+            if new_last_seen:
+                last_seen = new_last_seen
+                save_last_seen(last_seen.isoformat())
+
+        time.sleep(5)
+
+
+if __name__ == "__main__":
+    main()

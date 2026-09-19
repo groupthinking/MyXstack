@@ -1,0 +1,242 @@
+version: 2.1
+
+# All gates delegate to Makefile targets (make ci-python-lint, ci-python-test,
+# ci-node-install, ci-node-build). Run `make ci` locally before pushing — the
+# pipeline must never fail on something that wasn't run locally.
+
+orbs:
+  node: circleci/node@5.2.0
+  python: circleci/python@2.1.1
+
+executors:
+  node_executor:
+    docker:
+      - image: cimg/node:20.11
+  python_executor:
+    docker:
+      - image: cimg/python:3.11
+
+commands:
+  detect_node_project:
+    steps:
+      - run:
+          name: Detect Node project
+          command: |
+            if [ -f package.json ]; then
+              echo "export HAS_NODE=1" >> "$BASH_ENV"
+            else
+              echo "export HAS_NODE=0" >> "$BASH_ENV"
+            fi
+
+  detect_python_project:
+    steps:
+      - run:
+          name: Detect Python project
+          command: |
+            if find . -type f -name "*.py" | grep -q .; then
+              echo "export HAS_PYTHON=1" >> "$BASH_ENV"
+            else
+              echo "export HAS_PYTHON=0" >> "$BASH_ENV"
+            fi
+
+  # Each Python job runs in a fresh container: installed pip packages do NOT
+  # persist via the workspace, only files do. Every job that invokes python
+  # tooling must therefore install the dev dependencies itself.
+  install_python_deps:
+    steps:
+      - restore_cache:
+          keys:
+            - v3-pip-{{ arch }}-{{ .Branch }}-{{ checksum "requirements-dev.txt" }}
+            - v3-pip-{{ arch }}-{{ .Branch }}-
+            - v3-pip-{{ arch }}-
+      - run:
+          name: Install Python dependencies
+          command: |
+            source "$BASH_ENV"
+            if [ "$HAS_PYTHON" = "1" ]; then
+              python -m pip install --upgrade pip
+              if [ -f requirements-dev.txt ]; then
+                python -m pip install -r requirements-dev.txt
+              elif [ -f requirements.txt ]; then
+                python -m pip install -r requirements.txt
+                python -m pip install pytest flake8
+              else
+                python -m pip install pytest flake8
+              fi
+              python -m pytest --version
+            else
+              echo "No Python files found; skipping"
+            fi
+      - save_cache:
+          key: v3-pip-{{ arch }}-{{ .Branch }}-{{ checksum "requirements-dev.txt" }}
+          paths:
+            - ~/.cache/pip
+
+jobs:
+  node_install:
+    executor: node_executor
+    steps:
+      - checkout
+      - detect_node_project
+      - run:
+          name: Install Node dependencies
+          command: |
+            source "$BASH_ENV"
+            if [ "$HAS_NODE" = "1" ]; then
+              if [ -f package-lock.json ]; then
+                make ci-node-install
+              else
+                npm install
+              fi
+            else
+              echo "No package.json found; skipping"
+            fi
+      - save_cache:
+          key: v2-npm-{{ arch }}-{{ .Branch }}-{{ checksum "package-lock.json" }}
+          paths:
+            - ~/.npm
+      - persist_to_workspace:
+          root: .
+          paths:
+            - .
+
+  node_lint:
+    executor: node_executor
+    steps:
+      - attach_workspace:
+          at: .
+      - restore_cache:
+          keys:
+            - v2-npm-{{ arch }}-{{ .Branch }}-{{ checksum "package-lock.json" }}
+            - v2-npm-{{ arch }}-{{ .Branch }}-
+            - v2-npm-{{ arch }}-
+      - detect_node_project
+      - run:
+          name: Lint Node project
+          command: |
+            source "$BASH_ENV"
+            if [ "$HAS_NODE" = "1" ] && npm run | grep -q " lint"; then
+              npm run lint
+            else
+              echo "No Node lint script found; skipping (run 'make ci' locally for full parity)"
+            fi
+
+  node_build:
+    executor: node_executor
+    steps:
+      - attach_workspace:
+          at: .
+      - restore_cache:
+          keys:
+            - v2-npm-{{ arch }}-{{ .Branch }}-{{ checksum "package-lock.json" }}
+            - v2-npm-{{ arch }}-{{ .Branch }}-
+            - v2-npm-{{ arch }}-
+      - detect_node_project
+      - run:
+          name: Build Node project
+          command: |
+            source "$BASH_ENV"
+            if [ "$HAS_NODE" = "1" ] && npm run | grep -q " build"; then
+              make ci-node-build
+            else
+              echo "No Node build script found; skipping"
+            fi
+      - store_artifacts:
+          path: dist
+          destination: node-dist
+
+  node_test:
+    executor: node_executor
+    parallelism: 2
+    steps:
+      - attach_workspace:
+          at: .
+      - restore_cache:
+          keys:
+            - v2-npm-{{ arch }}-{{ .Branch }}-{{ checksum "package-lock.json" }}
+            - v2-npm-{{ arch }}-{{ .Branch }}-
+            - v2-npm-{{ arch }}-
+      - detect_node_project
+      - run:
+          name: Test Node project
+          command: |
+            source "$BASH_ENV"
+            if [ "$HAS_NODE" = "1" ] && npm run | grep -q " test"; then
+              mkdir -p test-results
+              npm test -- --ci --reporter=junit --reporter-options outputFile=test-results/junit.xml || npm test
+            else
+              echo "No Node test script found; skipping (run 'make ci' locally for full parity)"
+            fi
+      - store_test_results:
+          path: test-results
+
+  python_setup:
+    executor: python_executor
+    steps:
+      - checkout
+      - detect_python_project
+      - install_python_deps
+      - persist_to_workspace:
+          root: .
+          paths:
+            - .
+
+  python_lint:
+    executor: python_executor
+    steps:
+      - attach_workspace:
+          at: .
+      - detect_python_project
+      - install_python_deps
+      - run:
+          name: Lint Python project
+          command: |
+            source "$BASH_ENV"
+            if [ "$HAS_PYTHON" = "1" ]; then
+              make ci-python-lint
+            else
+              echo "No Python files found; skipping"
+            fi
+
+  python_test:
+    executor: python_executor
+    parallelism: 2
+    steps:
+      - attach_workspace:
+          at: .
+      - detect_python_project
+      - install_python_deps
+      - run:
+          name: Test Python project
+          command: |
+            source "$BASH_ENV"
+            if [ "$HAS_PYTHON" = "1" ] && ([ -d tests ] || find . -type f \( -name "test_*.py" -o -name "*_test.py" \) | grep -q .); then
+              mkdir -p test-results
+              make ci-python-test PYTEST_ARGS="--junitxml=test-results/junit.xml"
+            else
+              echo "No Python tests found; skipping"
+            fi
+      - store_test_results:
+          path: test-results
+
+workflows:
+  version: 2
+  ci:
+    jobs:
+      - node_install
+      - node_lint:
+          requires:
+            - node_install
+      - node_build:
+          requires:
+            - node_install
+      - node_test:
+          requires:
+            - node_install
+      - python_setup
+      - python_lint:
+          requires:
+            - python_setup
+      - python_test:
+          requires:
+            - python_setup

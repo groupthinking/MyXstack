@@ -1,128 +1,292 @@
 import os
 import time
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
+from typing import Optional
 
+import requests
 import tweepy
-from tweepy.errors import TweepyException
+from dotenv import load_dotenv
+from tweepy.errors import HTTPException as TweepyHTTPException
+
+from agents.base import MentionContext, build_card, text_block, timeline_headers
+from agents.registry import register_team, route_mention
+
+LAST_SEEN_PATH = Path(os.getenv("XMCP_LAST_SEEN_PATH", "~/.xmcp/last_seen.txt")).expanduser()
+PROCESSED_MENTIONS_PATH = Path(
+    os.getenv("XMCP_PROCESSED_MENTIONS_PATH", "~/.xmcp/processed_mentions.txt")
+).expanduser()
+# The last-seen watermark has second granularity and start_time is inclusive,
+# so the newest processed mention is re-fetched on every restart. The
+# processed-mentions ledger exists to suppress that duplicate reply; it only
+# needs to cover the replay window, not all history.
+MAX_PROCESSED_MENTIONS = int(os.getenv("XMCP_MAX_PROCESSED_MENTIONS", "10000"))
+POLL_SECONDS = int(os.getenv("POLL_INTERVAL_SECONDS", "60"))
+PAYMENT_REQUIRED_BACKOFF_SECONDS = int(os.getenv("X_PAYMENT_REQUIRED_BACKOFF_SECONDS", "900"))
 
 
-def require_env(name: str) -> str:
-    value = os.getenv(name)
-    if not value:
-        raise RuntimeError(f"Missing required environment variable: {name}")
-    return value
+def load_env() -> None:
+    env_path = Path(__file__).resolve().parent / ".env"
+    if env_path.exists():
+        load_dotenv(env_path)
 
 
-def parse_poll_interval() -> int:
-    value = os.getenv("POLL_INTERVAL_SECONDS", "60")
+def save_last_seen(value: str) -> None:
+    LAST_SEEN_PATH.parent.mkdir(parents=True, exist_ok=True)
+    LAST_SEEN_PATH.write_text(value, encoding="utf-8")
+
+
+def load_last_seen() -> Optional[str]:
+    if not LAST_SEEN_PATH.exists():
+        return None
+    return LAST_SEEN_PATH.read_text(encoding="utf-8").strip() or None
+
+
+def load_processed_mentions() -> "set[str]":
+    """Load recently processed mention IDs, compacting the ledger on the way.
+
+    An unreadable ledger must not kill the listener thread — worst case a
+    few boundary mentions get a second reply, which is preferable to no
+    mentions being handled at all.
+    """
     try:
-        interval = int(value)
-    except ValueError:
-        print(f"Invalid POLL_INTERVAL_SECONDS '{value}', defaulting to 60.")
-        return 60
-    if interval <= 0:
-        print("POLL_INTERVAL_SECONDS must be positive; defaulting to 60.")
-        return 60
-    return interval
+        if not PROCESSED_MENTIONS_PATH.exists():
+            return set()
+        lines = [
+            line.strip()
+            for line in PROCESSED_MENTIONS_PATH.read_text(encoding="utf-8").splitlines()
+            if line.strip()
+        ]
+    except OSError as exc:
+        print(
+            f"WARNING: could not read {PROCESSED_MENTIONS_PATH}: {exc}; "
+            "starting with an empty processed-mentions set (duplicate replies possible)",
+            flush=True,
+        )
+        return set()
+    if len(lines) > MAX_PROCESSED_MENTIONS:
+        lines = lines[-MAX_PROCESSED_MENTIONS:]
+        try:
+            PROCESSED_MENTIONS_PATH.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        except OSError as exc:
+            print(f"WARNING: could not compact {PROCESSED_MENTIONS_PATH}: {exc}", flush=True)
+    return set(lines)
+
+
+def save_processed_mention(mention_id: str) -> None:
+    PROCESSED_MENTIONS_PATH.parent.mkdir(parents=True, exist_ok=True)
+    with PROCESSED_MENTIONS_PATH.open("a", encoding="utf-8") as f:
+        f.write(f"{mention_id}\n")
 
 
 def build_client() -> tweepy.Client:
+    access_token = os.getenv("X_ACCESS_TOKEN") or os.getenv("X_OAUTH_ACCESS_TOKEN")
+    access_secret = os.getenv("X_ACCESS_SECRET") or os.getenv("X_OAUTH_ACCESS_TOKEN_SECRET")
     return tweepy.Client(
-        bearer_token=require_env("X_BEARER_TOKEN"),
-        consumer_key=require_env("X_API_KEY"),
-        consumer_secret=require_env("X_API_SECRET"),
-        access_token=require_env("X_OAUTH_ACCESS_TOKEN"),
-        access_token_secret=require_env("X_OAUTH_ACCESS_TOKEN_SECRET"),
+        bearer_token=os.getenv("X_BEARER_TOKEN"),
+        consumer_key=os.getenv("X_API_KEY"),
+        consumer_secret=os.getenv("X_API_SECRET"),
+        access_token=access_token,
+        access_token_secret=access_secret,
+        wait_on_rate_limit=True,
     )
 
 
-def fetch_thread_context(client: tweepy.Client, conversation_id: str) -> str | None:
+def push_timeline_card(card: dict, posted_by: str) -> None:
+    timeline_url = os.getenv("TIMELINE_API_URL", "http://127.0.0.1:8080")
+    user_id = os.getenv("TIMELINE_USER_ID", "default")
+    payload = {
+        "user_id": user_id,
+        "title": card.get("title", "Untitled"),
+        "body": card.get("body", ""),
+        "blocks": card.get("blocks", []),
+        "posted_by": posted_by,
+        "actions": card.get("actions", []),
+        "metadata": card.get("metadata", {}),
+    }
+    response = requests.post(
+        f"{timeline_url}/v1/timeline/items",
+        json=payload,
+        headers=timeline_headers(),
+        timeout=10,
+    )
+    # Surface 4xx/5xx as failures so the caller holds the watermark and
+    # retries — a lost card would silently defeat the approval gate.
+    response.raise_for_status()
+
+
+def process_mention(client: tweepy.Client, mention) -> bool:
+    """Route one mention to its team member and deliver the results.
+
+    Returns False when the approval card could not be pushed — the caller
+    must then NOT advance the last-seen watermark, so the mention is
+    retried next poll instead of its approval-gated proposal being lost.
+    The card is pushed before the X reply for the same reason: the card is
+    the safety-critical artifact.
+    """
+    context = MentionContext(
+        text=mention.text,
+        mention_id=mention.id,
+        author_id=mention.author_id,
+        conversation_id=mention.conversation_id,
+    )
+    member = route_mention(context)
+    print(
+        f"Mention {mention.id} routed to {member.profile.id} ({member.profile.kind})",
+        flush=True,
+    )
     try:
-        thread = client.search_recent_tweets(
-            query=f"conversation_id:{conversation_id}",
-            tweet_fields=["text", "author_id"],
+        reply = member.handle_mention(context)
+    except Exception as exc:
+        print(
+            f"Error from agent {member.profile.id} for mention {mention.id}: {exc}",
+            flush=True,
         )
-    except TweepyException as exc:
-        print(f"Failed to fetch thread context for {conversation_id}: {exc}")
-        return None
-    tweets = thread.data or []
-    return "\n".join(tweet.text for tweet in tweets)
+        # Dead-letter: surface the failure on the timeline so the mention
+        # isn't silently dropped, without poison-pilling the poll loop.
+        # Only if even the dead-letter card can't land do we hold the
+        # watermark and retry the mention next poll.
+        try:
+            push_timeline_card(
+                build_card(
+                    title=f"Agent error on mention {mention.id}",
+                    blocks=[
+                        text_block(f"{member.profile.id} failed: {exc}", label="Error"),
+                        text_block(mention.text, label="Mention"),
+                    ],
+                    metadata={
+                        "agent_id": member.profile.id,
+                        "mention_id": mention.id,
+                        "error": str(exc),
+                    },
+                ),
+                posted_by=member.profile.id,
+            )
+            return True
+        except Exception:
+            return False
+
+    if reply.card:
+        try:
+            push_timeline_card(reply.card, posted_by=member.profile.id)
+        except Exception as exc:
+            print(
+                f"Error pushing timeline card for mention {mention.id}: {exc}; will retry",
+                flush=True,
+            )
+            return False
+
+    try:
+        client.create_tweet(
+            text=reply.text[:280],
+            in_reply_to_tweet_id=mention.id,
+        )
+    except Exception as exc:
+        print(f"Error replying to mention {mention.id}: {exc}", flush=True)
+        # Best-effort: surface the dropped reply on the timeline so an
+        # operator can recover it. The mention is not retried — its card
+        # (and any side effects) already landed.
+        try:
+            push_timeline_card(
+                build_card(
+                    title=f"Failed to post reply to mention {mention.id}",
+                    blocks=[
+                        text_block(reply.text, label="Intended reply"),
+                        text_block(str(exc), label="Error"),
+                    ],
+                    metadata={
+                        "agent_id": member.profile.id,
+                        "mention_id": mention.id,
+                        "error": str(exc),
+                    },
+                ),
+                posted_by=member.profile.id,
+            )
+        except Exception as recovery_exc:
+            print(
+                f"Error pushing failed-reply card for mention {mention.id}: {recovery_exc}",
+                flush=True,
+            )
+            # Reply-only mentions (no proposal card landed earlier) would
+            # otherwise vanish entirely — hold the watermark and retry.
+            if not reply.card:
+                return False
+    return True
 
 
 def main() -> None:
-    try:
-        client = build_client()
-        bot = client.get_me().data
-    except (RuntimeError, TweepyException) as exc:
-        print(f"Unable to initialize client: {exc}")
-        return
+    load_env()
+    client = build_client()
+    me = client.get_me().data
+    if not me:
+        raise RuntimeError("Could not resolve authenticated X user for listener")
+    bot_id = me.id
+    register_team()
 
-    if not bot:
-        print("Unable to fetch bot user info.")
-        return
-
-    bot_id = bot.id
-    poll_interval = parse_poll_interval()
-    last_seen_id = None
-    last_checked = datetime.now(timezone.utc) - timedelta(minutes=10)
+    last_seen = load_last_seen()
+    processed_mentions = load_processed_mentions()
+    start_time = datetime.now(timezone.utc) - timedelta(minutes=10)
+    if last_seen:
+        try:
+            start_time = datetime.fromisoformat(last_seen)
+        except ValueError:
+            pass
 
     while True:
         try:
-            mentions_response = client.get_users_mentions(
+            mentions = client.get_users_mentions(
                 id=bot_id,
-                since_id=last_seen_id,
-                tweet_fields=["created_at", "conversation_id"],
+                start_time=start_time,
+                tweet_fields=["conversation_id", "created_at", "author_id", "text"],
             )
-        except TweepyException as exc:
-            print(f"Failed to fetch mentions: {exc}")
-            time.sleep(poll_interval)
+        except TweepyHTTPException as exc:
+            status_code = getattr(getattr(exc, "response", None), "status_code", None)
+            if status_code == 402:
+                # Avoid crash-looping if the X account does not have API credits enabled yet.
+                print(
+                    f"X API returned 402 Payment Required. Backing off for {PAYMENT_REQUIRED_BACKOFF_SECONDS}s.",
+                    flush=True,
+                )
+                time.sleep(PAYMENT_REQUIRED_BACKOFF_SECONDS)
+                continue
+            print(f"X API error fetching mentions: {exc}", flush=True)
+            time.sleep(POLL_SECONDS)
+            continue
+        except Exception as exc:
+            print(f"Unexpected error fetching mentions: {exc}", flush=True)
+            time.sleep(POLL_SECONDS)
             continue
 
-        mentions = mentions_response.data or []
-        processed_ids: list[int] = []
-        had_failure = False
+        # The X API returns mentions newest-first; process oldest-first so
+        # the last-seen watermark only ever moves forward.
+        epoch = datetime(1970, 1, 1, tzinfo=timezone.utc)
+        for mention in sorted(mentions.data or [], key=lambda m: m.created_at or epoch):
+            mention_id = str(mention.id)
+            if mention_id in processed_mentions:
+                # Already replied (start_time is inclusive, so the boundary
+                # mention comes back every poll/restart). Still advance the
+                # watermark so it stops being re-fetched.
+                print(f"Skipping already processed mention {mention.id}", flush=True)
+            else:
+                if not process_mention(client, mention):
+                    # Card push failed: stop here so this mention (and later
+                    # ones) are retried on the next poll.
+                    break
+                processed_mentions.add(mention_id)
+                try:
+                    save_processed_mention(mention_id)
+                except OSError as exc:
+                    # The reply already went out — a persistence failure only
+                    # risks a duplicate after restart, so log it as such
+                    # rather than as a reply failure.
+                    print(
+                        f"WARNING: could not persist processed mention {mention.id}: {exc}",
+                        flush=True,
+                    )
+            start_time = mention.created_at or datetime.now(timezone.utc)
+            save_last_seen(start_time.isoformat())
 
-        for mention in reversed(mentions):
-            if mention.created_at and mention.created_at < last_checked:
-                processed_ids.append(int(mention.id))
-                continue
-            if not mention.conversation_id:
-                processed_ids.append(int(mention.id))
-                continue
-
-            context = fetch_thread_context(client, str(mention.conversation_id))
-            if context is None:
-                print(f"Skipping mention {mention.id} due to thread fetch failure.")
-                had_failure = True
-                break
-
-            prompt = (
-                "You were tagged here:\n"
-                f"{context}\n\n"
-                "Reason through this step-by-step and use X tools via xMCP to respond autonomously.\n"
-                "Server: http://127.0.0.1:8000/mcp"
-            )
-
-            # TODO: Replace with Grok invocation via xMCP.
-            _ = prompt
-
-            try:
-                client.create_tweet(
-                    text="Processing your tag... (full response coming soon)",
-                    in_reply_to_tweet_id=mention.id,
-                )
-            except TweepyException as exc:
-                print(f"Failed to reply to mention {mention.id}: {exc}")
-                had_failure = True
-                break
-
-            processed_ids.append(int(mention.id))
-
-        if processed_ids:
-            last_seen_id = max(processed_ids)
-            if not had_failure:
-                last_checked = datetime.now(timezone.utc)
-        time.sleep(poll_interval)
+        time.sleep(POLL_SECONDS)
 
 
 if __name__ == "__main__":

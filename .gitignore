@@ -1,8 +1,31 @@
+# Environment
+.env
+.env.*
+!env.example
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+
+# Node/TypeScript
 node_modules/
 dist/
-.env
+
+# Data stores (created at runtime)
+*.json.bak
+*.json.lock
+*.json.tmp
+~/.xmcp/
+
+# OS
 .DS_Store
-*.log
+Thumbs.db
+
+# IDE
 .vscode/
 .idea/
-__pycache__/
+*.swp
+*.swo

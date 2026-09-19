@@ -1,0 +1,86 @@
+"""@Shopping — interactive shopping agent.
+
+Usage on X:  @Shopping find me trail running shoes under $150
+
+Grok researches options and replies with picks; any purchase intent is
+logged as an approval card. There is no built-in payment executor —
+approving records the intent until a commerce adapter is wired in.
+"""
+
+import os
+import re
+from typing import Any, Dict, Optional
+
+from agents.base import (
+    KIND_AGENT,
+    AgentProfile,
+    AgentReply,
+    MentionContext,
+    TeamMember,
+    approve_reject,
+    build_card,
+    grok_chat,
+    text_block,
+    truncate_for_reply,
+    wrap_untrusted,
+)
+
+_BUDGET = re.compile(r"under\s+\$(?P<budget>\d+(?:\.\d+)?)", re.IGNORECASE)
+
+
+class ShoppingAgent(TeamMember):
+    def __init__(self):
+        super().__init__(
+            AgentProfile(
+                id="shopping",
+                handle=os.getenv("SHOPPING_HANDLE", "Shopping"),
+                name="Shopping",
+                description="Finds products; purchases are approval-gated intents.",
+                kind=KIND_AGENT,
+                tags=["shopping", "commerce"],
+            )
+        )
+
+    def handle_mention(self, mention: MentionContext) -> AgentReply:
+        budget_match = _BUDGET.search(mention.text)
+        budget = f" with a budget of ${budget_match.group('budget')}" if budget_match else ""
+        picks = grok_chat(
+            "You are a shopping assistant. From the request below, suggest up to 3 "
+            f"specific products{budget}, one line each with an approximate price. "
+            "Facts only.\n\n"
+            f"{wrap_untrusted(mention.text)}"
+        )
+        if not picks:
+            return AgentReply(text="Shopping agent is offline (no XAI_API_KEY configured).")
+
+        card = build_card(
+            title="Shopping picks",
+            blocks=[
+                text_block(mention.text, label="Request"),
+                text_block(picks, label="Picks"),
+            ],
+            # Labels must stay in sync with execute_action() below, which
+            # matches on them rather than on the action id.
+            actions=approve_reject("Approve Purchase", "Reject"),
+            metadata={
+                "agent_id": self.profile.id,
+                "action_type": "purchase",
+                "mention_id": mention.mention_id,
+                "author_id": mention.author_id,
+            },
+        )
+        reply = truncate_for_reply(picks, suffix="… Full list on your timeline.")
+        return AgentReply(text=reply, card=card)
+
+    def execute_action(self, item: Dict[str, Any], action: str) -> Optional[str]:
+        metadata = item.get("metadata") or {}
+        if metadata.get("action_type") != "purchase":
+            return None
+        if action.lower().startswith("approve"):
+            return (
+                "🛒 Purchase intent recorded. No payment adapter is configured, "
+                "so nothing was bought — connect a commerce executor to complete orders."
+            )
+        if action.lower() == "reject":
+            return "🚫 Shopping request closed. Nothing was purchased."
+        return None
