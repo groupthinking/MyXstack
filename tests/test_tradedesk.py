@@ -116,6 +116,22 @@ def test_invalid_side_and_quantity_rejected(tmp_path):
     assert broker.positions() == {}
 
 
+def test_overflow_quantity_is_rejected(tmp_path):
+    broker = PaperBroker(str(tmp_path / "trades.json"))
+    agent = TradeDeskAgent(broker=broker)
+    bad_qty = {
+        "id": "i3",
+        "metadata": {
+            "action_type": "trade",
+            "ticker": "TSLA",
+            "side": "buy",
+            "quantity": 10**400,
+        },
+    }
+    assert "Invalid quantity" in agent.execute_action(bad_qty, "Approve")
+    assert broker.positions() == {}
+
+
 def test_reject_places_no_order(tmp_path):
     broker = PaperBroker(str(tmp_path / "trades.json"))
     agent = TradeDeskAgent(broker=broker)
