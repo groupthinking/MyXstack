@@ -41,8 +41,7 @@ def get_timeline_item(item_id: str) -> Optional[Dict]:
             headers=timeline_headers(),
             timeout=10,
         )
-        if response.status_code != 200:
-            return None
+        response.raise_for_status()
         return response.json()
     except (requests.RequestException, ValueError) as exc:
         print(f"Could not fetch timeline item {item_id}: {exc}", flush=True)
@@ -64,7 +63,7 @@ def get_messages(agent_id: str) -> list[Dict]:
 
 def send_message(from_agent: str, to: str, content: str, metadata: Dict) -> None:
     timeline_url = os.getenv("TIMELINE_API_URL", "http://127.0.0.1:8080")
-    requests.post(
+    response = requests.post(
         f"{timeline_url}/v1/a2a/messages",
         json={
             "from": from_agent,
@@ -76,6 +75,7 @@ def send_message(from_agent: str, to: str, content: str, metadata: Dict) -> None
         headers=timeline_headers(),
         timeout=10,
     )
+    response.raise_for_status()
 
 
 def ensure_agent_registered(agent_id: str) -> None:
@@ -98,12 +98,13 @@ def ensure_agent_registered(agent_id: str) -> None:
 
 def update_timeline_item(item_id: str, metadata: Dict) -> None:
     timeline_url = os.getenv("TIMELINE_API_URL", "http://127.0.0.1:8080")
-    requests.patch(
+    response = requests.patch(
         f"{timeline_url}/v1/timeline/items/{item_id}",
         json={"metadata": metadata},
         headers=timeline_headers(),
         timeout=10,
     )
+    response.raise_for_status()
 
 
 def call_grok(prompt: str) -> str:
@@ -136,14 +137,20 @@ def _parse_time(value: Optional[str]) -> Optional[datetime]:
         return None
 
 
-def _handle_message(agent_id: str, message: dict, last_seen: Optional[datetime]) -> Optional[datetime]:
-    """Process a single dispatch message; returns the new last_seen timestamp
-    (or None if the message did not advance it)."""
+def _handle_message(
+    agent_id: str, message: dict, last_seen: Optional[datetime]
+) -> tuple[Optional[datetime], bool]:
+    """Process one dispatch message.
+
+    Returns `(new_last_seen, should_stop)`. `should_stop` is true when the
+    action must remain retryable, so the watermark must not advance and newer
+    messages must wait for a later poll.
+    """
     created_at = _parse_time(message.get("created_at"))
     if last_seen and created_at and created_at <= last_seen:
-        return None
+        return None, False
     if message.get("type") != "timeline_action":
-        return None
+        return None, False
 
     metadata = message.get("metadata", {})
     item_id = metadata.get("timeline_item_id")
@@ -169,7 +176,7 @@ def _handle_message(agent_id: str, message: dict, last_seen: Optional[datetime])
             f"'{item_meta['processed_action']}'",
             flush=True,
         )
-        return created_at or datetime.now(timezone.utc)
+        return created_at or datetime.now(timezone.utc), False
     owned_agent_id = item_meta.get("agent_id")
     if item and action and owned_agent_id:
         owner = find_member(owned_agent_id)
@@ -200,22 +207,29 @@ Use MCP tools to execute any required external steps. Return a concise status up
             # Grok never ran; don't consume the action.
             execution_failed = True
 
-    if item_id:
-        # A failed execution must stay retryable: record the result
-        # but don't mark the action processed.
-        update = {"mcp_result": result}
-        if not execution_failed:
-            update["processed_action"] = action
-        update_timeline_item(item_id, update)
+    try:
+        if item_id:
+            # A failed execution must stay retryable: record the result
+            # but don't mark the action processed.
+            update = {"mcp_result": result}
+            if not execution_failed:
+                update["processed_action"] = action
+            update_timeline_item(item_id, update)
 
-    send_message(
-        from_agent=agent_id,
-        to=message.get("from", "timeline-ui"),
-        content=result,
-        metadata={"timeline_item_id": item_id, "action": action},
-    )
+        send_message(
+            from_agent=agent_id,
+            to=message.get("from", "timeline-ui"),
+            content=result,
+            metadata={"timeline_item_id": item_id, "action": action},
+        )
+    except requests.RequestException as exc:
+        print(f"Could not persist dispatch result for item {item_id}: {exc}", flush=True)
+        execution_failed = True
 
-    return created_at or datetime.now(timezone.utc)
+    if execution_failed:
+        return None, True
+
+    return created_at or datetime.now(timezone.utc), False
 
 
 def main() -> None:
@@ -227,10 +241,12 @@ def main() -> None:
     while True:
         messages = get_messages(agent_id)
         for message in messages:
-            new_last_seen = _handle_message(agent_id, message, last_seen)
+            new_last_seen, stop_processing = _handle_message(agent_id, message, last_seen)
             if new_last_seen:
                 last_seen = new_last_seen
                 save_last_seen(last_seen.isoformat())
+            if stop_processing:
+                break
 
         time.sleep(5)
 
