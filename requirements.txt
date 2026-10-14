@@ -4,7 +4,7 @@ httpx>=0.28.1
 python-dotenv>=1.2.4
 
 # Timeline / A2A API
-fastapi>=0.142.2
+fastapi>=0.143.0
 uvicorn>=0.54.0
 pydantic>=2.13.5
 sqlalchemy>=2.1.3
