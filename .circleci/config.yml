@@ -161,11 +161,10 @@ jobs:
           name: Test Node project
           command: |
             source "$BASH_ENV"
-            if [ "$HAS_NODE" = "1" ] && npm run | grep -q " test"; then
-              mkdir -p test-results
-              npm test -- --ci --reporter=junit --reporter-options outputFile=test-results/junit.xml || npm test
+            if [ "$HAS_NODE" = "1" ]; then
+              make ci-node-test
             else
-              echo "No Node test script found; skipping (run 'make ci' locally for full parity)"
+              echo "No Node project found; skipping"
             fi
       - store_test_results:
           path: test-results
