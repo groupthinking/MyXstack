@@ -23,17 +23,25 @@ async function setup(supported = true) {
   let refreshCount = 0;
   const status = { textContent: "2 cards loaded" };
   const document = {
-    modelContext: supported ? { registerTool: async tool => { registered.push(tool); } } : undefined,
+    // Test double only: these tests do not establish native browser support.
+    modelContext: supported ? {
+      registerTool: async (tool, { signal }) => {
+        if (signal.aborted) return;
+        registered.push(tool);
+        signal.addEventListener("abort", () => {
+          const index = registered.indexOf(tool);
+          if (index !== -1) registered.splice(index, 1);
+        }, { once: true });
+      },
+    } : undefined,
     querySelectorAll: selector => selector === "#feed .card" ? cards : [],
     getElementById: id => id === "status" ? status : null,
   };
-  const window = {
-    addEventListener: () => {},
-    myxstackTimeline: { refresh: async () => { refreshCount++; return true; } },
-  };
+  const window = new EventTarget();
+  window.myxstackTimeline = { refresh: async () => { refreshCount++; return true; } };
   vm.runInNewContext(source, { document, window, AbortController, console });
   for (let i = 0; i < 8; i++) await Promise.resolve();
-  return { registered, cards, get refreshCount() { return refreshCount; } };
+  return { registered, cards, window, get refreshCount() { return refreshCount; } };
 }
 const output = response => JSON.parse(response.content[0].text);
 
@@ -74,4 +82,33 @@ test("refresh delegates to the existing UI function", async () => {
   assert.equal(data.ok, true);
   assert.equal(state.refreshCount, 1);
   assert.equal(data.status, "2 cards loaded");
+});
+
+function pageHide(window, persisted) {
+  const event = new Event("pagehide");
+  Object.defineProperty(event, "persisted", { value: persisted });
+  window.dispatchEvent(event);
+}
+
+test("bfcache pagehide preserves tools across repeated cached navigations", async () => {
+  const state = await setup();
+  pageHide(state.window, true);
+  assert.equal(state.registered.length, 3);
+  pageHide(state.window, true);
+  assert.equal(state.registered.length, 3);
+  assert.equal(output(await state.registered[0].execute({})).count, 2);
+});
+
+test("non-persisted pagehide unregisters all tools", async () => {
+  const state = await setup();
+  pageHide(state.window, false);
+  assert.equal(state.registered.length, 0);
+});
+
+test("final disposal after bfcache still unregisters tools", async () => {
+  const state = await setup();
+  pageHide(state.window, true);
+  assert.equal(state.registered.length, 3);
+  pageHide(state.window, false);
+  assert.equal(state.registered.length, 0);
 });
