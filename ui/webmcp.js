@@ -76,5 +76,9 @@
       }
     }
   })();
-  window.addEventListener("pagehide", () => controller.abort(), { once: true });
+  // A cached document resumes without rerunning this script. Keep its tools
+  // registered while in bfcache, but still clean up on a later final unload.
+  window.addEventListener("pagehide", (event) => {
+    if (!event.persisted) controller.abort();
+  });
 })();
