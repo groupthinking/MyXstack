@@ -247,13 +247,57 @@ class TimelineReader:
         return item
 
 
+def _make_tool_caller(reader, token_type, metadata_url):
+    import anyio
+    import jsonschema
+    from mcp import types
+    from mcp.server.auth.middleware.auth_context import get_access_token
+
+    async def call_tool(_context, params):
+        name, arguments = params.name, params.arguments or {}
+
+        def error(message, **kwargs):
+            return types.CallToolResult(is_error=True,
+                                        content=[types.TextContent(type="text", text=message)], **kwargs)
+
+        token = get_access_token()
+        if (not isinstance(token, token_type) or READ_SCOPE not in token.scopes
+                or not token.expires_at or token.expires_at <= time.time()):
+            challenge = (f'Bearer resource_metadata="{metadata_url}", '
+                         'error="invalid_token", error_description="Authentication required"')
+            return error("Authentication required", _meta={"mcp/www_authenticate": [challenge]})
+        if name not in TOOL_SCHEMAS:
+            return error("Unknown or forbidden tool")
+        try:
+            jsonschema.validate(arguments, TOOL_SCHEMAS[name])
+            if name == "get_current_user":
+                result = {"user_id": token.user_id, "permissions": [READ_SCOPE], "read_only": True}
+            elif name == "list_timeline_items":
+                result = await anyio.to_thread.run_sync(
+                    lambda: reader.list_items(token.user_id, **arguments))
+            else:
+                result = await anyio.to_thread.run_sync(
+                    lambda: reader.get_item(token.user_id, arguments["item_id"]))
+            LOG.info("read_only_tool=%s outcome=success", name)
+            return types.CallToolResult(content=[types.TextContent(type="text", text=json.dumps(result))],
+                                        structured_content=result)
+        except ItemNotFound:
+            return error("Item not found")
+        except (ValueError, TypeError, KeyError, jsonschema.ValidationError):
+            return error("Invalid tool arguments")
+        except SQLAlchemyError:
+            LOG.warning("read_only_tool=%s outcome=storage_unavailable", name)
+            return error("Timeline storage unavailable")
+
+    return call_tool
+
+
 def create_app(settings: Settings | None = None, *, reader=None, authorizer=None):
     """ASGI factory. Refuses startup until auth, mapping and database are configured."""
     # Keep SDK imports here so configuration/crypto/data tests can run independently.
     import anyio
-    import jsonschema
     from mcp import types
-    from mcp.server.auth.middleware.auth_context import AuthContextMiddleware, get_access_token
+    from mcp.server.auth.middleware.auth_context import AuthContextMiddleware
     from mcp.server.auth.middleware.bearer_auth import BearerAuthBackend, RequireAuthMiddleware
     from mcp.server.auth.provider import AccessToken
     from mcp.server.lowlevel import Server
@@ -304,41 +348,7 @@ def create_app(settings: Settings | None = None, *, reader=None, authorizer=None
             _meta={"securitySchemes": security},
         ) for name, schema in TOOL_SCHEMAS.items()])
 
-    async def call_tool(_context, params):
-        name, arguments = params.name, params.arguments or {}
-
-        def error(message, **kwargs):
-            return types.CallToolResult(is_error=True,
-                                        content=[types.TextContent(type="text", text=message)], **kwargs)
-
-        token = get_access_token()
-        if (not isinstance(token, TimelineToken) or READ_SCOPE not in token.scopes
-                or not token.expires_at or token.expires_at <= time.time()):
-            challenge = (f'Bearer resource_metadata="{metadata_url}", '
-                         'error="invalid_token", error_description="Authentication required"')
-            return error("Authentication required", _meta={"mcp/www_authenticate": [challenge]})
-        if name not in TOOL_SCHEMAS:
-            return error("Unknown or forbidden tool")
-        try:
-            jsonschema.validate(arguments, TOOL_SCHEMAS[name])
-            if name == "get_current_user":
-                result = {"user_id": token.user_id, "permissions": [READ_SCOPE], "read_only": True}
-            elif name == "list_timeline_items":
-                result = await anyio.to_thread.run_sync(
-                    lambda: reader.list_items(token.user_id, **arguments))
-            else:
-                result = await anyio.to_thread.run_sync(
-                    lambda: reader.get_item(token.user_id, arguments["item_id"]))
-            LOG.info("read_only_tool=%s outcome=success", name)
-            return types.CallToolResult(content=[types.TextContent(type="text", text=json.dumps(result))],
-                                        structured_content=result)
-        except ItemNotFound:
-            return error("Item not found")
-        except (ValueError, TypeError, KeyError, jsonschema.ValidationError):
-            return error("Invalid tool arguments")
-        except SQLAlchemyError:
-            LOG.warning("read_only_tool=%s outcome=storage_unavailable", name)
-            return error("Timeline storage unavailable")
+    call_tool = _make_tool_caller(reader, TimelineToken, metadata_url)
 
     server = Server(
         "myxstack-timeline", version="1.0.0", on_list_tools=list_tools, on_call_tool=call_tool,

@@ -10,7 +10,14 @@ import uvicorn
 from starlette.testclient import TestClient
 
 import timeline_mcp as tm
-from test_timeline_mcp import authorizer, keys, make_token, reader, settings  # noqa: F401
+import test_timeline_mcp as fixtures
+
+# Reuse the real-signature/database fixtures without shadowing imported names.
+settings = fixtures.settings
+keys = fixtures.keys
+reader = fixtures.reader
+authorizer = fixtures.authorizer
+make_token = fixtures.make_token
 
 
 @pytest.fixture
@@ -25,11 +32,13 @@ def client(app):
 
 
 def rpc(client, token, method, params=None, **headers):
-    return client.post("/mcp", json={"jsonrpc": "2.0", "id": 1, "method": method,
-                                   "params": params or {}},
-                       headers={"Authorization": f"Bearer {token}",
-                                "Accept": "application/json, text/event-stream",
-                                "MCP-Protocol-Version": "2025-11-25", **headers})
+    return client.post(
+        "/mcp",
+        json={"jsonrpc": "2.0", "id": 1, "method": method, "params": params or {}},
+        headers={"Authorization": f"Bearer {token}",
+                 "Accept": "application/json, text/event-stream",
+                 "MCP-Protocol-Version": "2025-11-25", **headers},
+    )
 
 
 def call(client, token, name, arguments=None):

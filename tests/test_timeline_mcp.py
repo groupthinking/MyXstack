@@ -58,13 +58,15 @@ def reader(settings):
             actions JSON, metadata JSON, blocks JSON)"""))
         for ident, owner, status in [("a1", "alice", "unread"),
                                      ("a2", "alice", "read"), ("b1", "bob", "unread")]:
-            conn.execute(text("""INSERT INTO timeline_items
-                (id,user_id,title,body,status,posted_by,created_at,actions,metadata,blocks)
-                VALUES (:id,:owner,:title,:body,:status,'agent',:created,:actions,:metadata,'[]')"""),
+            conn.execute(
+                text("""INSERT INTO timeline_items
+                    (id,user_id,title,body,status,posted_by,created_at,actions,metadata,blocks)
+                    VALUES (:id,:owner,:title,:body,:status,'agent',:created,:actions,:metadata,'[]')"""),
                 dict(id=ident, owner=owner, title=f"Card {ident}", body=f"Body {ident}",
                      status=status, created="2026-01-01 00:00:00",
                      actions='[{"id":"approve","label":"Approve"}]',
-                     metadata='{"api_token":"MUST_NOT_LEAK"}'))
+                     metadata='{"api_token":"MUST_NOT_LEAK"}'),
+            )
     engine.dispose()
     instance = tm.TimelineReader(settings)
     yield instance
