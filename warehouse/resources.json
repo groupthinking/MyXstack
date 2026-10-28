@@ -1,0 +1,66 @@
+[
+  {
+    "platform": "web",
+    "source": "hayden-mxs-brief",
+    "external_id": "github",
+    "url": "https://github.com/groupthinking",
+    "title": "github",
+    "text": "User supplied GitHub organization for MXS resources."
+  },
+  {
+    "platform": "web",
+    "source": "hayden-mxs-brief",
+    "external_id": "vercel-templates",
+    "url": "https://vercel.com/templates",
+    "title": "vercel-templates",
+    "text": "User approved frontend/backend template source."
+  },
+  {
+    "platform": "web",
+    "source": "hayden-mxs-brief",
+    "external_id": "v0-templates",
+    "url": "https://v0.app/templates/categories",
+    "title": "v0-templates",
+    "text": "User approved template discovery source."
+  },
+  {
+    "platform": "web",
+    "source": "hayden-mxs-brief",
+    "external_id": "payload",
+    "url": "https://github.com/payloadcms",
+    "title": "payload",
+    "text": "User requested backend resource."
+  },
+  {
+    "platform": "web",
+    "source": "hayden-mxs-brief",
+    "external_id": "jev-introduction",
+    "url": "https://docs.typesafe.ai/introduction.md",
+    "title": "jev-introduction",
+    "text": "User requires Jev for structured decision-making."
+  },
+  {
+    "platform": "web",
+    "source": "hayden-mxs-brief",
+    "external_id": "jev-advanced",
+    "url": "https://docs.typesafe.ai/primitives/advanced.md",
+    "title": "jev-advanced",
+    "text": "User supplied structured decision guidance."
+  },
+  {
+    "platform": "web",
+    "source": "hayden-mxs-brief",
+    "external_id": "comark",
+    "url": "https://comark.dev/",
+    "title": "comark",
+    "text": "User supplied AI Markdown rendering resource."
+  },
+  {
+    "platform": "web",
+    "source": "hayden-mxs-brief",
+    "external_id": "render-templates",
+    "url": "https://render.com/templates",
+    "title": "render-templates",
+    "text": "User supplied hosting template source."
+  }
+]
