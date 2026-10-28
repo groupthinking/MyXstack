@@ -193,6 +193,15 @@ listener, and dispatcher services individually, or the workers will get 401s.
 working. Set `TIMELINE_CORS_ORIGINS` only if you host a surface on another
 origin.
 
+### Browser-agent timeline tools (WebMCP)
+
+The approval UI optionally registers read-only WebMCP tools when the browser provides
+`document.modelContext.registerTool`. Browser agents can list currently
+visible card metadata, focus a card, and refresh the existing UI. **WebMCP
+cannot approve, reject, or execute a timeline action.** In unsupported
+browsers the human UI behaves normally. Run `make ci-node-test` and
+see [the integration boundaries and release gates](docs/WEBMCP_AND_CHATGPT.md).
+
 ## Card Content
 
 A card carries typed `blocks` so a surface can render structure instead of one
