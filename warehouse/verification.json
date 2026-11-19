@@ -1,0 +1,46 @@
+{
+  "timestamp": "2026-09-28T06:39:06.638489+00:00",
+  "base_commit": "f09e64b275557ec4e8933664a2087890693a2284",
+  "scope": "offline warehouse only; no live providers, full repo suite, or deployment tested",
+  "checks": [
+    {
+      "command": [
+        "/opt/codex/runtimes/codex-primary-runtime/dependencies/python/bin/python",
+        "-m",
+        "unittest",
+        "discover",
+        "-s",
+        "tests/warehouse",
+        "-v"
+      ],
+      "exit_code": 0,
+      "output": "test_confidence_boundary (test_intake.WarehouseTests.test_confidence_boundary) ... ok\ntest_invalid_batch_is_atomic (test_intake.WarehouseTests.test_invalid_batch_is_atomic) ... ok\ntest_invalid_provider_outputs (test_intake.WarehouseTests.test_invalid_provider_outputs) ... ok\ntest_missing_key_never_calls_provider (test_intake.WarehouseTests.test_missing_key_never_calls_provider) ... ok\ntest_provider_error_is_recorded_without_secret (test_intake.WarehouseTests.test_provider_error_is_recorded_without_secret) ... ok\ntest_replay_and_revision (test_intake.WarehouseTests.test_replay_and_revision) ... ok\ntest_source_isolation (test_intake.WarehouseTests.test_source_isolation) ... ok\ntest_valid_response_recorded (test_intake.WarehouseTests.test_valid_response_recorded) ... ok\n\n----------------------------------------------------------------------\nRan 8 tests in 0.014s\n\nOK\n"
+    },
+    {
+      "command": [
+        "/opt/codex/runtimes/codex-primary-runtime/dependencies/python/bin/python",
+        "-m",
+        "flake8",
+        "warehouse",
+        "tests/warehouse"
+      ],
+      "exit_code": 0,
+      "output": ""
+    },
+    {
+      "command": [
+        "git",
+        "diff",
+        "--check"
+      ],
+      "exit_code": 0,
+      "output": ""
+    }
+  ],
+  "sha256": {
+    "warehouse/core.py": "0ee3c6f6eb597380ec380ee42c82da2368ca1f89feb4b9d7127f1913dfc0238e",
+    "warehouse/__init__.py": "422579bdd69f492fb043eeb49056a49584f91e02221a1a97d5394eb6fbfa5aad",
+    "warehouse/__main__.py": "d2f305d40def7e84bf1b8b90661b68c89fdfbe6ca0e45c7e051dc42932ea0a5f",
+    "tests/warehouse/test_intake.py": "3171f7ec26eded232f537a5139633a2f0d40dba11cafe519123ebab42962c58f"
+  }
+}
