@@ -133,6 +133,7 @@ function renderBlock(block) {
 
 function renderCard(item) {
   const card = el("article", "card");
+  card.dataset.itemId = String(item.id || "");
 
   const head = el("header", "card-head");
   head.appendChild(el("h2", null, item.title || "Untitled"));
@@ -233,7 +234,7 @@ async function refresh() {
     );
     if (response.status === 401) {
       setStatus("401 — set a valid API token.", "err");
-      return;
+      return false;
     }
     if (!response.ok) throw new Error(`${response.status}`);
 
@@ -246,10 +247,14 @@ async function refresh() {
       items.forEach((item) => feedEl.appendChild(renderCard(item)));
     }
     setStatus(`${items.length} card(s) — updated ${new Date().toLocaleTimeString()}`);
+    return true;
   } catch (err) {
     setStatus(`Could not load timeline: ${err.message}`, "err");
+    return false;
   }
 }
 
+// A narrow UI adapter for optional browser WebMCP. No mutation method is exposed.
+window.myxstackTimeline = Object.freeze({ refresh });
 refresh();
 setInterval(refresh, POLL_MS);

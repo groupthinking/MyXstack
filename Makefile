@@ -1,4 +1,4 @@
-.PHONY: setup run stop logs test clean ts-setup ts-build ts-dev ci ci-python ci-python-lint ci-python-test ci-node ci-node-install ci-node-build
+.PHONY: setup run stop logs test clean ts-setup ts-build ts-dev ci ci-python ci-python-lint ci-python-test ci-node ci-node-install ci-node-build ci-node-test
 
 # ─── Python Stack ───────────────────────────
 
@@ -58,8 +58,8 @@ ci-python-test:
 ci-node: ci-node-install
 	# Mirrors node_build: `npm run build` (tsc) — only gate that executes code
 	$(MAKE) ci-node-build
-	# node_lint / node_test are no-ops: package.json has no lint/test scripts,
-	# so CircleCI skips them and so do we.
+	$(MAKE) ci-node-test
+	# Node lint stays a no-op because package.json has no lint script.
 
 ci-node-install:
 	# Mirrors node_install: `npm ci` when a lockfile exists
@@ -68,6 +68,10 @@ ci-node-install:
 ci-node-build:
 	# Mirrors node_build: `tsc`
 	npm run build
+
+ci-node-test:
+	# Read-only WebMCP behavior, shared with CircleCI node_test.
+	node --test tests/test_webmcp.cjs
 
 # ─── Docker ─────────────────────────────────
 
