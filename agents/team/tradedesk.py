@@ -139,7 +139,7 @@ class TradeDeskAgent(TeamMember):
             return f"⚠️ Invalid side '{side}' on trade card {item.get('id', '?')}; nothing executed."
         try:
             quantity = float(metadata.get("quantity", 1))
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, OverflowError):
             return f"⚠️ Invalid quantity on trade card {item.get('id', '?')}; nothing executed."
         if not math.isfinite(quantity) or quantity <= 0:
             return f"⚠️ Invalid quantity {quantity:g} on trade card {item.get('id', '?')}; nothing executed."
